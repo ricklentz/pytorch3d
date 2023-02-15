@@ -1,4 +1,4 @@
-# Copyright (c) Facebook, Inc. and its affiliates.
+# Copyright (c) Meta Platforms, Inc. and affiliates.
 # All rights reserved.
 #
 # This source code is licensed under the BSD-style license found in the
@@ -10,20 +10,57 @@ from typing import Dict, List, NamedTuple, Optional, Tuple, Union
 import plotly.graph_objects as go
 import torch
 from plotly.subplots import make_subplots
-from pytorch3d.renderer import RayBundle, TexturesVertex, ray_bundle_to_ray_points
+from pytorch3d.renderer import (
+    HeterogeneousRayBundle,
+    ray_bundle_to_ray_points,
+    RayBundle,
+    TexturesAtlas,
+    TexturesVertex,
+)
 from pytorch3d.renderer.camera_utils import camera_to_eye_at_up
 from pytorch3d.renderer.cameras import CamerasBase
-from pytorch3d.structures import Meshes, Pointclouds, join_meshes_as_scene
+from pytorch3d.structures import join_meshes_as_scene, Meshes, Pointclouds
 
 
-Struct = Union[CamerasBase, Meshes, Pointclouds, RayBundle]
+Struct = Union[CamerasBase, Meshes, Pointclouds, RayBundle, HeterogeneousRayBundle]
 
 
-def _get_struct_len(struct: Struct):  # pragma: no cover
+def _get_len(struct: Union[Struct, List[Struct]]) -> int:  # pragma: no cover
     """
     Returns the length (usually corresponds to the batch size) of the input structure.
     """
-    return len(struct.directions) if isinstance(struct, RayBundle) else len(struct)
+    # pyre-ignore[6]
+    if not _is_ray_bundle(struct):
+        # pyre-ignore[6]
+        return len(struct)
+    if _is_heterogeneous_ray_bundle(struct):
+        # pyre-ignore[16]
+        return len(struct.camera_counts)
+    # pyre-ignore[16]
+    return len(struct.directions)
+
+
+def _is_ray_bundle(struct: Struct) -> bool:
+    """
+    Args:
+        struct: Struct object to test
+    Returns:
+        True if something is a RayBundle, HeterogeneousRayBundle or
+        ImplicitronRayBundle, else False
+    """
+    return hasattr(struct, "directions")
+
+
+def _is_heterogeneous_ray_bundle(struct: Union[List[Struct], Struct]) -> bool:
+    """
+    Args:
+        struct :object to test
+    Returns:
+        True if something is a HeterogeneousRayBundle or ImplicitronRayBundle
+        and cant be reduced to RayBundle else False
+    """
+    # pyre-ignore[16]
+    return hasattr(struct, "camera_counts") and struct.camera_counts is not None
 
 
 def get_camera_wireframe(scale: float = 0.3):  # pragma: no cover
@@ -63,6 +100,7 @@ class Lighting(NamedTuple):  # pragma: no cover
     vertexnormalsepsilon: float = 1e-12
 
 
+@torch.no_grad()
 def plot_scene(
     plots: Dict[str, Dict[str, Struct]],
     *,
@@ -254,9 +292,9 @@ def plot_scene(
 
     camera = {
         "up": {
-            "x": 0,
-            "y": 1,
-            "z": 0,
+            "x": 0.0,
+            "y": 1.0,
+            "z": 0.0,
         }  # set the up vector to match PyTorch3D world coordinates conventions
     }
     viewpoints_eye_at_up_world = None
@@ -296,7 +334,7 @@ def plot_scene(
                 _add_camera_trace(
                     fig, struct, trace_name, subplot_idx, ncols, camera_scale
                 )
-            elif isinstance(struct, RayBundle):
+            elif _is_ray_bundle(struct):
                 _add_ray_bundle_trace(
                     fig,
                     struct,
@@ -311,7 +349,7 @@ def plot_scene(
             else:
                 raise ValueError(
                     "struct {} is not a Cameras, Meshes, Pointclouds,".format(struct)
-                    + " or RayBundle object."
+                    + " , RayBundle or HeterogeneousRayBundle object."
                 )
 
         # Ensure update for every subplot.
@@ -370,6 +408,7 @@ def plot_scene(
     return fig
 
 
+@torch.no_grad()
 def plot_batch_individually(
     batched_structs: Union[
         List[Struct],
@@ -396,15 +435,16 @@ def plot_batch_individually(
     In addition, you can include Cameras, Meshes, Pointclouds, or RayBundle of size 1 in
     the input. These will either be rendered in the first subplot
     (if extend_struct is False), or in every subplot.
+    RayBundle includes ImplicitronRayBundle and HeterogeneousRaybundle.
 
     Args:
-        batched_structs: a list of Cameras, Meshes, Pointclouds, and RayBundle
-            to be rendered. Each structure's corresponding batch element will be
-            plotted in a single subplot, resulting in n subplots for a batch of size n.
-            Every struct should either have the same batch size or be of batch size 1.
-            See extend_struct and the description above for how batch size 1 structs
-            are handled. Also accepts a single Cameras, Meshes, Pointclouds, and RayBundle
-            object, which will have each individual element plotted in its own subplot.
+        batched_structs: a list of Cameras, Meshes, Pointclouds and RayBundle to be
+            rendered. Each structure's corresponding batch element will be plotted in a
+            single subplot, resulting in n subplots for a batch of size n. Every struct
+            should either have the same batch size or be of batch size 1. See extend_struct
+            and the description above for how batch size 1 structs are handled. Also accepts
+            a single Cameras, Meshes, Pointclouds, and RayBundle object, which will have
+            each individual element plotted in its own subplot.
         viewpoint_cameras: an instance of a Cameras object providing a location
             to view the plotly plot from. If the batch size is equal
             to the number of subplots, it is a one to one mapping.
@@ -446,20 +486,20 @@ def plot_batch_individually(
     """
 
     # check that every batch is the same size or is size 1
-    if len(batched_structs) == 0:
+    if _get_len(batched_structs) == 0:
         msg = "No structs to plot"
         warnings.warn(msg)
         return
     max_size = 0
     if isinstance(batched_structs, list):
-        max_size = max(_get_struct_len(s) for s in batched_structs)
+        max_size = max(_get_len(s) for s in batched_structs)
         for struct in batched_structs:
-            struct_len = _get_struct_len(struct)
+            struct_len = _get_len(struct)
             if struct_len not in (1, max_size):
                 msg = "invalid batch size {} provided: {}".format(struct_len, struct)
                 raise ValueError(msg)
     else:
-        max_size = _get_struct_len(batched_structs)
+        max_size = _get_len(batched_structs)
 
     if max_size == 0:
         msg = "No data is provided with at least one element"
@@ -469,6 +509,14 @@ def plot_batch_individually(
         if len(subplot_titles) != max_size:
             msg = "invalid number of subplot titles"
             raise ValueError(msg)
+
+    # if we are dealing with HeterogeneousRayBundle of ImplicitronRayBundle create
+    # first indexes for faster
+    first_idxs = None
+    if _is_heterogeneous_ray_bundle(batched_structs):
+        # pyre-ignore[16]
+        cumsum = batched_structs.camera_counts.cumsum(dim=0)
+        first_idxs = torch.cat((cumsum.new_zeros((1,)), cumsum))
 
     scene_dictionary = {}
     # construct the scene dictionary
@@ -482,16 +530,30 @@ def plot_batch_individually(
 
         if isinstance(batched_structs, list):
             for i, batched_struct in enumerate(batched_structs):
+                first_idxs = None
+                if _is_heterogeneous_ray_bundle(batched_structs[i]):
+                    # pyre-ignore[16]
+                    cumsum = batched_struct.camera_counts.cumsum(dim=0)
+                    first_idxs = torch.cat((cumsum.new_zeros((1,)), cumsum))
                 # check for whether this struct needs to be extended
-                batched_struct_len = _get_struct_len(batched_struct)
+                batched_struct_len = _get_len(batched_struct)
                 if i >= batched_struct_len and not extend_struct:
                     continue
                 _add_struct_from_batch(
-                    batched_struct, scene_num, subplot_title, scene_dictionary, i + 1
+                    batched_struct,
+                    scene_num,
+                    subplot_title,
+                    scene_dictionary,
+                    i + 1,
+                    first_idxs=first_idxs,
                 )
         else:  # batched_structs is a single struct
             _add_struct_from_batch(
-                batched_structs, scene_num, subplot_title, scene_dictionary
+                batched_structs,
+                scene_num,
+                subplot_title,
+                scene_dictionary,
+                first_idxs=first_idxs,
             )
 
     return plot_scene(
@@ -505,7 +567,8 @@ def _add_struct_from_batch(
     subplot_title: str,
     scene_dictionary: Dict[str, Dict[str, Struct]],
     trace_idx: int = 1,
-):  # pragma: no cover
+    first_idxs: Optional[torch.Tensor] = None,
+) -> None:  # pragma: no cover
     """
     Adds the struct corresponding to the given scene_num index to
     a provided scene_dictionary to be passed in to plot_scene
@@ -539,17 +602,35 @@ def _add_struct_from_batch(
         #  torch.Tensor, torch.nn.Module]` is not a function.
         T = T[t_idx].unsqueeze(0)
         struct = CamerasBase(device=batched_struct.device, R=R, T=T)
-    elif isinstance(batched_struct, RayBundle):
-        # for RayBundle we treat the 1st dim as the batch index
-        struct_idx = min(scene_num, len(batched_struct.lengths) - 1)
+    elif _is_ray_bundle(batched_struct) and not _is_heterogeneous_ray_bundle(
+        batched_struct
+    ):
+        # for RayBundle we treat the camera count as the batch index
+        struct_idx = min(scene_num, _get_len(batched_struct) - 1)
+
         struct = RayBundle(
             **{
                 attr: getattr(batched_struct, attr)[struct_idx]
                 for attr in ["origins", "directions", "lengths", "xys"]
             }
         )
+    elif _is_heterogeneous_ray_bundle(batched_struct):
+        # for RayBundle we treat the camera count as the batch index
+        struct_idx = min(scene_num, _get_len(batched_struct) - 1)
+
+        struct = RayBundle(
+            **{
+                attr: getattr(batched_struct, attr)[
+                    # pyre-ignore[16]
+                    first_idxs[struct_idx] : first_idxs[struct_idx + 1]
+                ]
+                for attr in ["origins", "directions", "lengths", "xys"]
+            }
+        )
+
     else:  # batched meshes and pointclouds are indexable
-        struct_idx = min(scene_num, len(batched_struct) - 1)
+        struct_idx = min(scene_num, _get_len(batched_struct) - 1)
+        # pyre-ignore[16]
         struct = batched_struct[struct_idx]
     trace_name = "trace{}-{}".format(scene_num + 1, trace_idx)
     scene_dictionary[subplot_title][trace_name] = struct
@@ -562,7 +643,7 @@ def _add_mesh_trace(
     subplot_idx: int,
     ncols: int,
     lighting: Lighting,
-):  # pragma: no cover
+) -> None:  # pragma: no cover
     """
     Adds a trace rendering a Meshes object to the passed in figure, with
     a given name and in a specific subplot.
@@ -580,13 +661,19 @@ def _add_mesh_trace(
     mesh = mesh.detach().cpu()
     verts = mesh.verts_packed()
     faces = mesh.faces_packed()
-    # If mesh has vertex colors defined as texture, use vertex colors
+    # If mesh has vertex colors or face colors, use them
     # for figure, otherwise use plotly's default colors.
     verts_rgb = None
+    faces_rgb = None
     if isinstance(mesh.textures, TexturesVertex):
         verts_rgb = mesh.textures.verts_features_packed()
         verts_rgb.clamp_(min=0.0, max=1.0)
         verts_rgb = torch.tensor(255.0) * verts_rgb
+    if isinstance(mesh.textures, TexturesAtlas):
+        atlas = mesh.textures.atlas_packed()
+        # If K==1
+        if atlas.shape[1] == 1 and atlas.shape[3] == 3:
+            faces_rgb = atlas[:, 0, 0]
 
     # Reposition the unused vertices to be "inside" the object
     # (i.e. they won't be visible in the plot).
@@ -602,6 +689,7 @@ def _add_mesh_trace(
             y=verts[:, 1],
             z=verts[:, 2],
             vertexcolor=verts_rgb,
+            facecolor=faces_rgb,
             i=faces[:, 0],
             j=faces[:, 1],
             k=faces[:, 2],
@@ -629,7 +717,7 @@ def _add_pointcloud_trace(
     ncols: int,
     max_points_per_pointcloud: int,
     marker_size: int,
-):  # pragma: no cover
+) -> None:  # pragma: no cover
     """
     Adds a trace rendering a Pointclouds object to the passed in figure, with
     a given name and in a specific subplot.
@@ -691,7 +779,7 @@ def _add_camera_trace(
     subplot_idx: int,
     ncols: int,
     camera_scale: float,
-):  # pragma: no cover
+) -> None:  # pragma: no cover
     """
     Adds a trace rendering a Cameras object to the passed in figure, with
     a given name and in a specific subplot.
@@ -741,7 +829,7 @@ def _add_camera_trace(
 
 def _add_ray_bundle_trace(
     fig: go.Figure,
-    ray_bundle: RayBundle,
+    ray_bundle: Union[RayBundle, HeterogeneousRayBundle],
     trace_name: str,
     subplot_idx: int,
     ncols: int,
@@ -749,14 +837,15 @@ def _add_ray_bundle_trace(
     max_points_per_ray: int,
     marker_size: int,
     line_width: int,
-):  # pragma: no cover
+) -> None:  # pragma: no cover
     """
-    Adds a trace rendering a RayBundle object to the passed in figure, with
-    a given name and in a specific subplot.
+    Adds a trace rendering a ray bundle object
+    to the passed in figure, with a given name and in a specific subplot.
 
     Args:
         fig: plotly figure to add the trace within.
-        cameras: the Cameras object to render. It can be batched.
+        ray_bundle: the RayBundle, ImplicitronRayBundle or HeterogeneousRaybundle to render.
+            It can be batched.
         trace_name: name to label the trace with.
         subplot_idx: identifies the subplot, with 0 being the top left.
         ncols: the number of subplots per row.
@@ -768,7 +857,7 @@ def _add_ray_bundle_trace(
     """
 
     n_pts_per_ray = ray_bundle.lengths.shape[-1]
-    n_rays = ray_bundle.lengths.shape[:-1].numel()  # pyre-ignore[16]
+    n_rays = ray_bundle.lengths.shape[:-1].numel()
 
     # flatten all batches of rays into a single big bundle
     ray_bundle_flat = RayBundle(
@@ -801,8 +890,12 @@ def _add_ray_bundle_trace(
     )
 
     # make the ray lines for plotly plotting
-    nan_tensor = torch.Tensor([[float("NaN")] * 3])
-    ray_lines = torch.empty(size=(1, 3))
+    nan_tensor = torch.tensor(
+        [[float("NaN")] * 3],
+        device=ray_lines_endpoints.device,
+        dtype=ray_lines_endpoints.dtype,
+    )
+    ray_lines = torch.empty(size=(1, 3), device=ray_lines_endpoints.device)
     for ray_line in ray_lines_endpoints:
         # We combine the ray lines into a single tensor to plot them in a
         # single trace. The NaNs are inserted between sets of ray lines
@@ -865,7 +958,7 @@ def _add_ray_bundle_trace(
     current_layout = fig["layout"][plot_scene]
 
     # update the bounds of the axes for the current trace
-    all_ray_points = ray_bundle_to_ray_points(ray_bundle).view(-1, 3)
+    all_ray_points = ray_bundle_to_ray_points(ray_bundle).reshape(-1, 3)
     ray_points_center = all_ray_points.mean(dim=0)
     max_expand = (all_ray_points.max(0)[0] - all_ray_points.min(0)[0]).max().item()
     _update_axes_bounds(ray_points_center, float(max_expand), current_layout)
@@ -906,7 +999,7 @@ def _update_axes_bounds(
     verts_center: torch.Tensor,
     max_expand: float,
     current_layout: go.Scene,  # pyre-ignore[11]
-):  # pragma: no cover
+) -> None:  # pragma: no cover
     """
     Takes in the vertices' center point and max spread, and the current plotly figure
     layout and updates the layout to have bounds that include all traces for that subplot.
@@ -915,6 +1008,7 @@ def _update_axes_bounds(
         max_expand: the maximum spread in any dimension of the trace's vertices.
         current_layout: the plotly figure layout scene corresponding to the referenced trace.
     """
+    verts_center = verts_center.detach().cpu()
     verts_min = verts_center - max_expand
     verts_max = verts_center + max_expand
     bounds = torch.t(torch.stack((verts_min, verts_max)))
@@ -944,7 +1038,7 @@ def _update_axes_bounds(
 
 def _scale_camera_to_bounds(
     coordinate: float, axis_bounds: Tuple[float, float], is_position: bool
-):  # pragma: no cover
+) -> float:  # pragma: no cover
     """
     We set our plotly plot's axes' bounding box to [-1,1]x[-1,1]x[-1,1]. As such,
     the plotly camera location has to be scaled accordingly to have its world coordinates

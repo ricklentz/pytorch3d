@@ -1,4 +1,4 @@
-# Copyright (c) Facebook, Inc. and its affiliates.
+# Copyright (c) Meta Platforms, Inc. and affiliates.
 # All rights reserved.
 #
 # This source code is licensed under the BSD-style license found in the
@@ -8,7 +8,7 @@ import math
 from typing import Tuple
 
 import torch
-from pytorch3d.renderer import PerspectiveCameras, look_at_view_transform
+from pytorch3d.renderer import look_at_view_transform, PerspectiveCameras
 from torch.utils.data.dataset import Dataset
 
 
@@ -87,7 +87,7 @@ def generate_eval_video_cameras(
             plane_normal = torch.FloatTensor(up)
         else:
             cov = (cam_centers_c.t() @ cam_centers_c) / cam_centers_c.shape[0]
-            _, e_vec = torch.symeig(cov, eigenvectors=True)
+            _, e_vec = torch.linalg.eigh(cov, UPLO="U")
             plane_normal = e_vec[:, 0]
 
         plane_dist = (plane_normal[None] * cam_centers_c).sum(dim=-1)
@@ -96,8 +96,8 @@ def generate_eval_video_cameras(
         cov = (
             cam_centers_on_plane.t() @ cam_centers_on_plane
         ) / cam_centers_on_plane.shape[0]
-        _, e_vec = torch.symeig(cov, eigenvectors=True)
-        traj_radius = (cam_centers_on_plane ** 2).sum(dim=1).sqrt().mean()
+        _, e_vec = torch.linalg.eigh(cov, UPLO="U")
+        traj_radius = (cam_centers_on_plane**2).sum(dim=1).sqrt().mean()
         angle = torch.linspace(0, 2.0 * math.pi, n_eval_cams)
         traj = traj_radius * torch.stack(
             (torch.zeros_like(angle), angle.cos(), angle.sin()), dim=-1

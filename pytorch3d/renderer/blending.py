@@ -1,15 +1,14 @@
-# Copyright (c) Facebook, Inc. and its affiliates.
+# Copyright (c) Meta Platforms, Inc. and affiliates.
 # All rights reserved.
 #
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
-
 from typing import NamedTuple, Sequence, Union
 
 import torch
 from pytorch3d import _C
-
+from pytorch3d.common.datatypes import Device
 
 # Example functions for blending the top K colors per pixel using the outputs
 # from rasterization.
@@ -21,10 +20,12 @@ class BlendParams(NamedTuple):
     Data class to store blending params with defaults
 
     Members:
-        sigma (float): Controls the width of the sigmoid function used to
-            calculate the 2D distance based probability. Determines the
-            sharpness of the edges of the shape.
-            Higher => faces have less defined edges.
+        sigma (float): For SoftmaxPhong, controls the width of the sigmoid
+            function used to calculate the 2D distance based probability. Determines
+            the sharpness of the edges of the shape. Higher => faces have less defined
+            edges. For SplatterPhong, this is the standard deviation of the Gaussian
+            kernel. Higher => splats have a stronger effect and the rendered image is
+            more blurry.
         gamma (float): Controls the scaling of the exponential function used
             to set the opacity of the color.
             Higher => faces are more transparent.
@@ -35,6 +36,17 @@ class BlendParams(NamedTuple):
     sigma: float = 1e-4
     gamma: float = 1e-4
     background_color: Union[torch.Tensor, Sequence[float]] = (1.0, 1.0, 1.0)
+
+
+def _get_background_color(
+    blend_params: BlendParams, device: Device, dtype=torch.float32
+) -> torch.Tensor:
+    background_color_ = blend_params.background_color
+    if isinstance(background_color_, torch.Tensor):
+        background_color = background_color_.to(device)
+    else:
+        background_color = torch.tensor(background_color_, dtype=dtype, device=device)
+    return background_color
 
 
 def hard_rgb_blend(
@@ -57,17 +69,10 @@ def hard_rgb_blend(
     Returns:
         RGBA pixel_colors: (N, H, W, 4)
     """
-    N, H, W, K = fragments.pix_to_face.shape
-    device = fragments.pix_to_face.device
+    background_color = _get_background_color(blend_params, fragments.pix_to_face.device)
 
     # Mask for the background.
     is_background = fragments.pix_to_face[..., 0] < 0  # (N, H, W)
-
-    background_color_ = blend_params.background_color
-    if isinstance(background_color_, torch.Tensor):
-        background_color = background_color_.to(device)
-    else:
-        background_color = colors.new_tensor(background_color_)
 
     # Find out how much background_color needs to be expanded to be used for masked_scatter.
     num_background_pixels = is_background.sum()
@@ -103,7 +108,6 @@ class _SigmoidAlphaBlend(torch.autograd.Function):
         return grad_dists, None, None
 
 
-# pyre-fixme[16]: `_SigmoidAlphaBlend` has no attribute `apply`.
 _sigmoid_alpha = _SigmoidAlphaBlend.apply
 
 
@@ -182,13 +186,8 @@ def softmax_rgb_blend(
     """
 
     N, H, W, K = fragments.pix_to_face.shape
-    device = fragments.pix_to_face.device
     pixel_colors = torch.ones((N, H, W, 4), dtype=colors.dtype, device=colors.device)
-    background_ = blend_params.background_color
-    if not isinstance(background_, torch.Tensor):
-        background = torch.tensor(background_, dtype=torch.float32, device=device)
-    else:
-        background = background_.to(device)
+    background_color = _get_background_color(blend_params, fragments.pix_to_face.device)
 
     # Weight for background color
     eps = 1e-10
@@ -214,6 +213,8 @@ def softmax_rgb_blend(
         # pyre-fixme[16]
         zfar = zfar[:, None, None, None]
     if torch.is_tensor(znear):
+        # pyre-fixme[16]: Item `float` of `Union[float, Tensor]` has no attribute
+        #  `__getitem__`.
         znear = znear[:, None, None, None]
 
     z_inv = (zfar - fragments.zbuf) / (zfar - znear) * mask
@@ -231,7 +232,7 @@ def softmax_rgb_blend(
 
     # Sum: weights * textures + background color
     weighted_colors = (weights_num[..., None] * colors).sum(dim=-2)
-    weighted_background = delta * background
+    weighted_background = delta * background_color
     pixel_colors[..., :3] = (weighted_colors + weighted_background) / denom
     pixel_colors[..., 3] = 1.0 - alpha
 

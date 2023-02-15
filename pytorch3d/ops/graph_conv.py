@@ -1,4 +1,4 @@
-# Copyright (c) Facebook, Inc. and its affiliates.
+# Copyright (c) Meta Platforms, Inc. and affiliates.
 # All rights reserved.
 #
 # This source code is licensed under the BSD-style license found in the
@@ -39,7 +39,6 @@ class GraphConv(nn.Module):
         if init == "normal":
             nn.init.normal_(self.w0.weight, mean=0, std=0.01)
             nn.init.normal_(self.w1.weight, mean=0, std=0.01)
-            # pyre-fixme[16]: Optional type has no attribute `data`.
             self.w0.bias.data.zero_()
             self.w1.bias.data.zero_()
         elif init == "zero":
@@ -120,7 +119,6 @@ def gather_scatter_python(input, edges, directed: bool = False):
     idx0 = edges[:, 0].view(num_edges, 1).expand(num_edges, input_feature_dim)
     idx1 = edges[:, 1].view(num_edges, 1).expand(num_edges, input_feature_dim)
 
-    # pyre-fixme[16]: `Tensor` has no attribute `scatter_add`.
     output = output.scatter_add(0, idx0, input.gather(0, idx1))
     if not directed:
         output = output.scatter_add(0, idx1, input.gather(0, idx0))
@@ -173,5 +171,4 @@ class GatherScatter(Function):
         return grad_input, grad_edges, grad_directed
 
 
-# pyre-fixme[16]: `GatherScatter` has no attribute `apply`.
 gather_scatter = GatherScatter.apply

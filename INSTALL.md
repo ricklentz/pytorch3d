@@ -8,8 +8,8 @@
 The core library is written in PyTorch. Several components have underlying implementation in CUDA for improved performance. A subset of these components have CPU implementations in C++/PyTorch. It is advised to use PyTorch3D with GPU support in order to use all the features.
 
 - Linux or macOS or Windows
-- Python 3.6, 3.7, 3.8 or 3.9
-- PyTorch 1.6.0, 1.7.0, 1.7.1, 1.8.0, 1.8.1, 1.9.0 or 1.9.1.
+- Python 3.8, 3.9 or 3.10
+- PyTorch 1.9.0, 1.9.1, 1.10.0, 1.10.1, 1.10.2, 1.11.0, 1.12.0, 1.12.1 or 1.13.0.
 - torchvision that matches the PyTorch installation. You can install them together as explained at pytorch.org to make sure of this.
 - gcc & g++ ≥ 4.9
 - [fvcore](https://github.com/facebookresearch/fvcore)
@@ -19,13 +19,13 @@ The core library is written in PyTorch. Several components have underlying imple
 
 The runtime dependencies can be installed by running:
 ```
-conda create -n pytorch3d python=3.8
+conda create -n pytorch3d python=3.9
 conda activate pytorch3d
-conda install -c pytorch pytorch=1.7.1 torchvision cudatoolkit=10.2
+conda install pytorch=1.13.0 torchvision pytorch-cuda=11.6 -c pytorch -c nvidia
 conda install -c fvcore -c iopath -c conda-forge fvcore iopath
 ```
 
-For the CUB build time dependency, if you are using conda, you can continue with
+For the CUB build time dependency, which you only need if you have CUDA older than 11.7, if you are using conda, you can continue with
 ```
 conda install -c bottler nvidiacub
 ```
@@ -43,7 +43,7 @@ export CUB_HOME=$PWD/cub-1.10.0
 For developing on top of PyTorch3D or contributing, you will need to run the linter and tests. If you want to run any of the notebook tutorials as `docs/tutorials` or the examples in `docs/examples` you will also need matplotlib and OpenCV.
 - scikit-image
 - black
-- isort
+- usort
 - flake8
 - matplotlib
 - tdqm
@@ -59,7 +59,7 @@ conda install jupyter
 pip install scikit-image matplotlib imageio plotly opencv-python
 
 # Tests/Linting
-pip install black 'isort<5' flake8 flake8-bugbear flake8-comprehensions
+pip install black usort flake8 flake8-bugbear flake8-comprehensions
 ```
 
 ## Installing prebuilt binaries for PyTorch3D
@@ -78,30 +78,32 @@ Or, to install a nightly (non-official, alpha) build:
 conda install pytorch3d -c pytorch3d-nightly
 ```
 ### 2. Install from PyPI, on Mac only.
-This works with pytorch 1.9.0 only. The build is CPU only.
+This works with pytorch 1.13.0 only. The build is CPU only.
 ```
 pip install pytorch3d
 ```
 
 ### 3. Install wheels for Linux
-We have prebuilt wheels with CUDA for Linux for PyTorch 1.9.0, for each of the CUDA versions that they support,
-for Python 3.7, 3.8 and 3.9.
+We have prebuilt wheels with CUDA for Linux for PyTorch 1.11.0, for each of the supported CUDA versions,
+for Python 3.8 and 3.9. This is for ease of use on Google Colab.
 These are installed in a special way.
-For example, to install for Python 3.8, PyTorch 1.9.0 and CUDA 10.2
+For example, to install for Python 3.8, PyTorch 1.11.0 and CUDA 11.3
 ```
-pip install pytorch3d -f https://dl.fbaipublicfiles.com/pytorch3d/packaging/wheels/py38_cu102_pyt190/download.html
+pip install --no-index --no-cache-dir pytorch3d -f https://dl.fbaipublicfiles.com/pytorch3d/packaging/wheels/py38_cu113_pyt1110/download.html
 ```
 
 In general, from inside IPython, or in Google Colab or a jupyter notebook, you can install with
 ```
 import sys
 import torch
+pyt_version_str=torch.__version__.split("+")[0].replace(".", "")
 version_str="".join([
     f"py3{sys.version_info.minor}_cu",
     torch.version.cuda.replace(".",""),
-    f"_pyt{torch.__version__[0:5:2]}"
+    f"_pyt{pyt_version_str}"
 ])
-!pip install pytorch3d -f https://dl.fbaipublicfiles.com/pytorch3d/packaging/wheels/{version_str}/download.html
+!pip install fvcore iopath
+!pip install --no-index --no-cache-dir pytorch3d -f https://dl.fbaipublicfiles.com/pytorch3d/packaging/wheels/{version_str}/download.html
 ```
 
 ## Building / installing from source.
@@ -146,10 +148,10 @@ After any necessary patching, you can go to "x64 Native Tools Command Prompt for
 cd pytorch3d
 python3 setup.py install
 ```
-After installing, verify whether all unit tests have passed
+
+After installing, you can run **unit tests**
 ```
-cd tests
-python3 -m unittest discover -p *.py
+python3 -m unittest discover -v -s tests -t .
 ```
 
 # FAQ

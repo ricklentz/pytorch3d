@@ -1,4 +1,4 @@
-# Copyright (c) Facebook, Inc. and its affiliates.
+# Copyright (c) Meta Platforms, Inc. and affiliates.
 # All rights reserved.
 #
 # This source code is licensed under the BSD-style license found in the
@@ -39,20 +39,20 @@ def corresponding_cameras_alignment(
     such that the following holds:
 
         Under the change of coordinates using a similarity transform
-        (R_A, T_A, s_A) a 3D point X' is mapped to X with:
-            ```
+        (R_A, T_A, s_A) a 3D point X' is mapped to X with: ::
+
             X = (X' R_A + T_A) / s_A
-            ```
-        Then, for all cameras `i`, we assume that the following holds:
-            ```
+
+        Then, for all cameras `i`, we assume that the following holds: ::
+
             X R_i + T_i = s' (X' R_i' + T_i'),
-            ```
+
         i.e. an adjusted point X' is mapped by a camera (R_i', T_i')
         to the same point as imaged from camera (R_i, T_i) after resolving
         the scale ambiguity with a global scalar factor s'.
 
-        Substituting for X above gives rise to the following:
-            ```
+        Substituting for X above gives rise to the following: ::
+
             (X' R_A + T_A) / s_A R_i + T_i = s' (X' R_i' + T_i')       // · s_A
             (X' R_A + T_A) R_i + T_i s_A = (s' s_A) (X' R_i' + T_i')
             s' := 1 / s_A  # without loss of generality
@@ -60,10 +60,11 @@ def corresponding_cameras_alignment(
             X' R_A R_i + T_A R_i + T_i s_A = X' R_i' + T_i'
                ^^^^^^^   ^^^^^^^^^^^^^^^^^
                ~= R_i'        ~= T_i'
-            ```
+
         i.e. after estimating R_A, T_A, s_A, the aligned source cameras have
-        extrinsics:
-            `cameras_src_align = (R_A R_i, T_A R_i + T_i s_A) ~= (R_i', T_i')`
+        extrinsics: ::
+
+            cameras_src_align = (R_A R_i, T_A R_i + T_i s_A) ~= (R_i', T_i')
 
     We support two ways `R_A, T_A, s_A` can be estimated:
         1) `mode=='centers'`
@@ -73,12 +74,12 @@ def corresponding_cameras_alignment(
 
         2) `mode=='extrinsics'`
             Defines the alignment problem as a system
-            of the following equations:
-                ```
+            of the following equations: ::
+
                 for all i:
                 [ R_A   0 ] x [ R_i         0 ] = [ R_i' 0 ]
                 [ T_A^T 1 ]   [ (s_A T_i^T) 1 ]   [ T_i' 1 ]
-                ```
+
             `R_A, T_A` and `s_A` are then obtained by solving the
             system in the least squares sense.
 
@@ -119,11 +120,16 @@ def corresponding_cameras_alignment(
 
     # create a new cameras object and set the R and T accordingly
     cameras_src_aligned = cameras_src.clone()
+    # pyre-fixme[6]: For 2nd param expected `Tensor` but got `Union[Tensor, Module]`.
     cameras_src_aligned.R = torch.bmm(align_t_R.expand_as(cameras_src.R), cameras_src.R)
     cameras_src_aligned.T = (
         torch.bmm(
-            align_t_T[:, None].repeat(cameras_src.R.shape[0], 1, 1), cameras_src.R
+            align_t_T[:, None].repeat(cameras_src.R.shape[0], 1, 1),
+            # pyre-fixme[6]: For 2nd param expected `Tensor` but got `Union[Tensor,
+            #  Module]`.
+            cameras_src.R,
         )[:, 0]
+        # pyre-fixme[29]: `Union[BoundMethod[typing.Callable(torch._C._TensorBase.__m...
         + cameras_src.T * align_t_s
     )
 
@@ -171,6 +177,7 @@ def _align_camera_extrinsics(
         R_A = (U V^T)^T
         ```
     """
+    # pyre-fixme[6]: For 1st param expected `Tensor` but got `Union[Tensor, Module]`.
     RRcov = torch.bmm(cameras_src.R, cameras_tgt.R.transpose(2, 1)).mean(0)
     U, _, V = torch.svd(RRcov)
     align_t_R = V @ U.t()
@@ -204,11 +211,13 @@ def _align_camera_extrinsics(
     #  `Union[BoundMethod[typing.Callable(torch.Tensor.__getitem__)[[Named(self,
     #  torch.Tensor), Named(item, typing.Any)], typing.Any], torch.Tensor],
     #  torch.Tensor, torch.nn.Module]` is not a function.
+    # pyre-fixme[6]: For 1st param expected `Tensor` but got `Union[Tensor, Module]`.
     A = torch.bmm(cameras_src.R, cameras_src.T[:, :, None])[:, :, 0]
     # pyre-fixme[29]:
     #  `Union[BoundMethod[typing.Callable(torch.Tensor.__getitem__)[[Named(self,
     #  torch.Tensor), Named(item, typing.Any)], typing.Any], torch.Tensor],
     #  torch.Tensor, torch.nn.Module]` is not a function.
+    # pyre-fixme[6]: For 1st param expected `Tensor` but got `Union[Tensor, Module]`.
     B = torch.bmm(cameras_src.R, cameras_tgt.T[:, :, None])[:, :, 0]
     Amu = A.mean(0, keepdim=True)
     Bmu = B.mean(0, keepdim=True)
@@ -217,7 +226,8 @@ def _align_camera_extrinsics(
         # of centered A and centered B
         Ac = A - Amu
         Bc = B - Bmu
-        align_t_s = (Ac * Bc).mean() / (Ac ** 2).mean().clamp(eps)
+        # pyre-fixme[58]: `**` is not supported for operand types `Tensor` and `int`.
+        align_t_s = (Ac * Bc).mean() / (Ac**2).mean().clamp(eps)
     else:
         # set the scale to identity
         align_t_s = 1.0

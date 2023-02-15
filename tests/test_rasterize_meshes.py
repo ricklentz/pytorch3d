@@ -1,4 +1,4 @@
-# Copyright (c) Facebook, Inc. and its affiliates.
+# Copyright (c) Meta Platforms, Inc. and affiliates.
 # All rights reserved.
 #
 # This source code is licensed under the BSD-style license found in the
@@ -8,7 +8,6 @@ import functools
 import unittest
 
 import torch
-from common_testing import TestCaseMixin, get_random_cuda_device
 from pytorch3d import _C
 from pytorch3d.renderer import FoVPerspectiveCameras, look_at_view_transform
 from pytorch3d.renderer.mesh import MeshRasterizer, RasterizationSettings
@@ -23,6 +22,8 @@ from pytorch3d.renderer.mesh.utils import (
 from pytorch3d.structures import Meshes
 from pytorch3d.utils import ico_sphere
 
+from .common_testing import get_random_cuda_device, TestCaseMixin
+
 
 class TestRasterizeMeshes(TestCaseMixin, unittest.TestCase):
     def test_simple_python(self):
@@ -34,13 +35,23 @@ class TestRasterizeMeshes(TestCaseMixin, unittest.TestCase):
         self._test_barycentric_clipping(rasterize_meshes_python, device, bin_size=-1)
         self._test_back_face_culling(rasterize_meshes_python, device, bin_size=-1)
 
-    def test_simple_cpu_naive(self):
+    def _test_simple_cpu_naive_instance(self):
         device = torch.device("cpu")
         self._simple_triangle_raster(rasterize_meshes, device, bin_size=0)
         self._simple_blurry_raster(rasterize_meshes, device, bin_size=0)
         self._test_behind_camera(rasterize_meshes, device, bin_size=0)
         self._test_perspective_correct(rasterize_meshes, device, bin_size=0)
         self._test_back_face_culling(rasterize_meshes, device, bin_size=0)
+
+    def test_simple_cpu_naive(self):
+        n_threads = torch.get_num_threads()
+        torch.set_num_threads(1)  # single threaded
+        self._test_simple_cpu_naive_instance()
+        torch.set_num_threads(4)  # even (divisible) number of threads
+        self._test_simple_cpu_naive_instance()
+        torch.set_num_threads(5)  # odd (nondivisible) number of threads
+        self._test_simple_cpu_naive_instance()
+        torch.set_num_threads(n_threads)
 
     def test_simple_cuda_naive(self):
         device = get_random_cuda_device()
@@ -62,7 +73,7 @@ class TestRasterizeMeshes(TestCaseMixin, unittest.TestCase):
         torch.manual_seed(231)
         device = torch.device("cpu")
         image_size = 32
-        blur_radius = 0.1 ** 2
+        blur_radius = 0.1**2
         faces_per_pixel = 3
 
         for d in ["cpu", get_random_cuda_device()]:
@@ -167,7 +178,7 @@ class TestRasterizeMeshes(TestCaseMixin, unittest.TestCase):
 
         torch.manual_seed(231)
         image_size = 64
-        radius = 0.1 ** 2
+        radius = 0.1**2
         faces_per_pixel = 3
         device = torch.device("cpu")
         meshes_cpu = ico_sphere(0, device)
@@ -224,7 +235,7 @@ class TestRasterizeMeshes(TestCaseMixin, unittest.TestCase):
         # Make sure that the backward pass runs for all pathways
         image_size = 64  # test is too slow for very large images.
         N = 1
-        radius = 0.1 ** 2
+        radius = 0.1**2
         faces_per_pixel = 3
 
         grad_zbuf = torch.randn(N, image_size, image_size, faces_per_pixel)
@@ -997,7 +1008,7 @@ class TestRasterizeMeshes(TestCaseMixin, unittest.TestCase):
         ordering of faces.
         """
         image_size = 10
-        blur_radius = 0.12 ** 2
+        blur_radius = 0.12**2
         faces_per_pixel = 1
 
         # fmt: off

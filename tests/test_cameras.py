@@ -1,10 +1,11 @@
-# Copyright (c) Facebook, Inc. and its affiliates.
+# Copyright (c) Meta Platforms, Inc. and affiliates.
 # All rights reserved.
 #
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
-# @lint-ignore-every LICENSELINT
+# @licenselint-loose-mode
+
 # Some of the code below is adapted from Soft Rasterizer (SoftRas)
 #
 # Copyright (c) 2017 Hiroharu Kato
@@ -30,30 +31,36 @@
 # SOFTWARE.
 
 import math
+import pickle
 import typing
 import unittest
+from itertools import product
 
 import numpy as np
 import torch
-from common_testing import TestCaseMixin
+from pytorch3d.common.datatypes import Device
+from pytorch3d.renderer.camera_utils import join_cameras_as_batch
 from pytorch3d.renderer.cameras import (
+    camera_position_from_spherical_angles,
     CamerasBase,
     FoVOrthographicCameras,
     FoVPerspectiveCameras,
+    get_world_to_view_transform,
+    look_at_rotation,
+    look_at_view_transform,
     OpenGLOrthographicCameras,
     OpenGLPerspectiveCameras,
     OrthographicCameras,
     PerspectiveCameras,
     SfMOrthographicCameras,
     SfMPerspectiveCameras,
-    camera_position_from_spherical_angles,
-    get_world_to_view_transform,
-    look_at_rotation,
-    look_at_view_transform,
 )
+from pytorch3d.renderer.fisheyecameras import FishEyeCameras
 from pytorch3d.transforms import Transform3d
 from pytorch3d.transforms.rotation_conversions import random_rotations
 from pytorch3d.transforms.so3 import so3_exp_map
+
+from .common_testing import TestCaseMixin
 
 
 # Naive function adapted from SoftRasterizer for test purposes.
@@ -130,9 +137,9 @@ def ndc_to_screen_points_naive(points, imsize):
     """
     height, width = imsize.unbind(1)
     width = width.view(-1, 1)
-    half_width = (width - 1.0) / 2.0
+    half_width = width / 2.0
     height = height.view(-1, 1)
-    half_height = (height - 1.0) / 2.0
+    half_height = height / 2.0
 
     scale = (
         half_width * (height > width).float() + half_height * (height <= width).float()
@@ -145,14 +152,17 @@ def ndc_to_screen_points_naive(points, imsize):
 
 
 def init_random_cameras(
-    cam_type: typing.Type[CamerasBase], batch_size: int, random_z: bool = False
+    cam_type: typing.Type[CamerasBase],
+    batch_size: int,
+    random_z: bool = False,
+    device: Device = "cpu",
 ):
     cam_params = {}
     T = torch.randn(batch_size, 3) * 0.03
     if not random_z:
         T[:, 2] = 4
     R = so3_exp_map(torch.randn(batch_size, 3) * 3.0)
-    cam_params = {"R": R, "T": T}
+    cam_params = {"R": R, "T": T, "device": device}
     if cam_type in (OpenGLPerspectiveCameras, OpenGLOrthographicCameras):
         cam_params["znear"] = torch.rand(batch_size) * 10 + 0.1
         cam_params["zfar"] = torch.rand(batch_size) * 4 + 1 + cam_params["znear"]
@@ -183,6 +193,12 @@ def init_random_cameras(
     ):
         cam_params["focal_length"] = torch.rand(batch_size) * 10 + 0.1
         cam_params["principal_point"] = torch.randn((batch_size, 2))
+    elif cam_type == FishEyeCameras:
+        cam_params["focal_length"] = torch.rand(batch_size, 1) * 10 + 0.1
+        cam_params["principal_point"] = torch.randn((batch_size, 2))
+        cam_params["radial_params"] = torch.randn((batch_size, 6))
+        cam_params["tangential_params"] = torch.randn((batch_size, 2))
+        cam_params["thin_prism_params"] = torch.randn((batch_size, 4))
 
     else:
         raise ValueError(str(cam_type))
@@ -193,7 +209,6 @@ class TestCameraHelpers(TestCaseMixin, unittest.TestCase):
     def setUp(self) -> None:
         super().setUp()
         torch.manual_seed(42)
-        np.random.seed(42)
 
     def test_look_at_view_transform_from_eye_point_tuple(self):
         dist = math.sqrt(2)
@@ -524,7 +539,7 @@ class TestCamerasCommon(TestCaseMixin, unittest.TestCase):
             # (height, width)
             image_size = torch.randint(low=2, high=64, size=(batch_size, 2))
             # scale
-            scale = (image_size.min(dim=1, keepdim=True).values - 1.0) / 2.0
+            scale = (image_size.min(dim=1, keepdim=True).values) / 2.0
 
             ndc_cam_params["focal_length"] = fcl
             ndc_cam_params["principal_point"] = prc
@@ -533,7 +548,7 @@ class TestCamerasCommon(TestCaseMixin, unittest.TestCase):
             screen_cam_params["image_size"] = image_size
             screen_cam_params["focal_length"] = fcl * scale
             screen_cam_params["principal_point"] = (
-                image_size[:, [1, 0]] - 1.0
+                image_size[:, [1, 0]]
             ) / 2.0 - prc * scale
             screen_cam_params["in_ndc"] = False
         else:
@@ -603,6 +618,40 @@ class TestCamerasCommon(TestCaseMixin, unittest.TestCase):
                     )
                     self.assertTrue(torch.allclose(xyz_unproj, matching_xyz, atol=1e-4))
 
+    @staticmethod
+    def unproject_points(
+        cam_type, batch_size=50, num_points=100, device: Device = "cpu"
+    ):
+        """
+        Checks that an unprojection of a randomly projected point cloud
+        stays the same.
+        """
+        if device == "cuda":
+            device = torch.device("cuda:0")
+        else:
+            device = torch.device("cpu")
+
+        str2cls = {  # noqa
+            "OpenGLOrthographicCameras": OpenGLOrthographicCameras,
+            "OpenGLPerspectiveCameras": OpenGLPerspectiveCameras,
+            "SfMOrthographicCameras": SfMOrthographicCameras,
+            "SfMPerspectiveCameras": SfMPerspectiveCameras,
+            "FoVOrthographicCameras": FoVOrthographicCameras,
+            "FoVPerspectiveCameras": FoVPerspectiveCameras,
+            "OrthographicCameras": OrthographicCameras,
+            "PerspectiveCameras": PerspectiveCameras,
+            "FishEyeCameras": FishEyeCameras,
+        }
+
+        def run_cameras():
+            # init the cameras
+            cameras = init_random_cameras(str2cls[cam_type], batch_size, device=device)
+            # xyz - the ground truth point cloud
+            xyz = torch.randn(num_points, 3) * 0.3
+            xyz = cameras.unproject_points(xyz, scaled_depth_input=True)
+
+        return run_cameras
+
     def test_project_points_screen(self, batch_size=50, num_points=100):
         """
         Checks that an unprojection of a randomly projected point cloud
@@ -637,8 +686,44 @@ class TestCamerasCommon(TestCaseMixin, unittest.TestCase):
             xyz_project_screen_naive = ndc_to_screen_points_naive(
                 xyz_project_ndc, image_size
             )
-            # we set atol to 1e-4, remember that screen points are in [0, W-1]x[0, H-1] space
+            # we set atol to 1e-4, remember that screen points are in [0, W]x[0, H] space
             self.assertClose(xyz_project_screen, xyz_project_screen_naive, atol=1e-4)
+
+    @staticmethod
+    def transform_points(
+        cam_type, batch_size=50, num_points=100, device: Device = "cpu"
+    ):
+        """
+        Checks that an unprojection of a randomly projected point cloud
+        stays the same.
+        """
+
+        if device == "cuda":
+            device = torch.device("cuda:0")
+        else:
+            device = torch.device("cpu")
+        str2cls = {  # noqa
+            "OpenGLOrthographicCameras": OpenGLOrthographicCameras,
+            "OpenGLPerspectiveCameras": OpenGLPerspectiveCameras,
+            "SfMOrthographicCameras": SfMOrthographicCameras,
+            "SfMPerspectiveCameras": SfMPerspectiveCameras,
+            "FoVOrthographicCameras": FoVOrthographicCameras,
+            "FoVPerspectiveCameras": FoVPerspectiveCameras,
+            "OrthographicCameras": OrthographicCameras,
+            "PerspectiveCameras": PerspectiveCameras,
+            "FishEyeCameras": FishEyeCameras,
+        }
+
+        def run_cameras():
+            # init the cameras
+            cameras = init_random_cameras(str2cls[cam_type], batch_size, device=device)
+            # xyz - the ground truth point cloud
+            xy = torch.randn(num_points, 2) * 2.0 - 1.0
+            z = torch.randn(num_points, 1) * 3.0 + 1.0
+            xyz = torch.cat((xy, z), dim=-1)
+            xy = cameras.transform_points(xyz)
+
+        return run_cameras
 
     def test_equiv_project_points(self, batch_size=50, num_points=100):
         """
@@ -687,6 +772,104 @@ class TestCamerasCommon(TestCaseMixin, unittest.TestCase):
                     self.assertSeparate(val, val_clone)
                 else:
                     self.assertTrue(val == val_clone)
+
+    def test_join_cameras_as_batch_errors(self):
+        cam0 = PerspectiveCameras(device="cuda:0")
+        cam1 = OrthographicCameras(device="cuda:0")
+
+        # Cameras not of the same type
+        with self.assertRaisesRegex(ValueError, "same type"):
+            join_cameras_as_batch([cam0, cam1])
+
+        cam2 = OrthographicCameras(device="cpu")
+        # Cameras not on the same device
+        with self.assertRaisesRegex(ValueError, "same device"):
+            join_cameras_as_batch([cam1, cam2])
+
+        cam3 = OrthographicCameras(in_ndc=False, device="cuda:0")
+        # Different coordinate systems -- all should be in ndc or in screen
+        with self.assertRaisesRegex(
+            ValueError, "Attribute _in_ndc is not constant across inputs"
+        ):
+            join_cameras_as_batch([cam1, cam3])
+
+    def join_cameras_as_batch_fov(self, camera_cls):
+        R0 = torch.randn((6, 3, 3))
+        R1 = torch.randn((3, 3, 3))
+        cam0 = camera_cls(znear=10.0, zfar=100.0, R=R0, device="cuda:0")
+        cam1 = camera_cls(znear=10.0, zfar=200.0, R=R1, device="cuda:0")
+
+        cam_batch = join_cameras_as_batch([cam0, cam1])
+
+        self.assertEqual(cam_batch._N, cam0._N + cam1._N)
+        self.assertEqual(cam_batch.device, cam0.device)
+        self.assertClose(cam_batch.R, torch.cat((R0, R1), dim=0).to(device="cuda:0"))
+
+    def join_cameras_as_batch(self, camera_cls):
+        R0 = torch.randn((6, 3, 3))
+        R1 = torch.randn((3, 3, 3))
+        p0 = torch.randn((6, 2, 1))
+        p1 = torch.randn((3, 2, 1))
+        f0 = 5.0
+        f1 = torch.randn(3, 2)
+        f2 = torch.randn(3, 1)
+        cam0 = camera_cls(
+            R=R0,
+            focal_length=f0,
+            principal_point=p0,
+        )
+        cam1 = camera_cls(
+            R=R1,
+            focal_length=f0,
+            principal_point=p1,
+        )
+        cam2 = camera_cls(
+            R=R1,
+            focal_length=f1,
+            principal_point=p1,
+        )
+        cam3 = camera_cls(
+            R=R1,
+            focal_length=f2,
+            principal_point=p1,
+        )
+        cam_batch = join_cameras_as_batch([cam0, cam1])
+
+        self.assertEqual(cam_batch._N, cam0._N + cam1._N)
+        self.assertEqual(cam_batch.device, cam0.device)
+        self.assertClose(cam_batch.R, torch.cat((R0, R1), dim=0))
+        self.assertClose(cam_batch.principal_point, torch.cat((p0, p1), dim=0))
+        self.assertEqual(cam_batch._in_ndc, cam0._in_ndc)
+
+        # Test one broadcasted value and one fixed value
+        # Focal length as (N,) in one camera and (N, 2) in the other
+        cam_batch = join_cameras_as_batch([cam0, cam2])
+        self.assertEqual(cam_batch._N, cam0._N + cam2._N)
+        self.assertClose(cam_batch.R, torch.cat((R0, R1), dim=0))
+        self.assertClose(
+            cam_batch.focal_length,
+            torch.cat([torch.tensor([[f0, f0]]).expand(6, -1), f1], dim=0),
+        )
+
+        # Focal length as (N, 1) in one camera and (N, 2) in the other
+        cam_batch = join_cameras_as_batch([cam2, cam3])
+        self.assertClose(
+            cam_batch.focal_length,
+            torch.cat([f1, f2.expand(-1, 2)], dim=0),
+        )
+
+    def test_join_batch_perspective(self):
+        self.join_cameras_as_batch_fov(FoVPerspectiveCameras)
+        self.join_cameras_as_batch(PerspectiveCameras)
+
+    def test_join_batch_orthographic(self):
+        self.join_cameras_as_batch_fov(FoVOrthographicCameras)
+        self.join_cameras_as_batch(OrthographicCameras)
+
+    def test_iterable(self):
+        for camera_type in [PerspectiveCameras, OrthographicCameras]:
+            a_list = list(camera_type())
+            self.assertEqual(len(a_list), 1)
 
 
 ############################################################
@@ -783,17 +966,70 @@ class TestFoVPerspectiveProjection(TestCaseMixin, unittest.TestCase):
         self.assertTrue(cam.znear.shape == (2,))
         self.assertTrue(cam.zfar.shape == (2,))
 
-        # update znear element 1
-        cam[1].znear = 20.0
-        self.assertTrue(cam.znear[1] == 20.0)
-
-        # Get item and get value
-        c0 = cam[0]
-        self.assertTrue(c0.zfar == 100.0)
-
         # Test to
         new_cam = cam.to(device=device)
         self.assertTrue(new_cam.device == device)
+
+    def test_getitem(self):
+        N_CAMERAS = 6
+        R_matrix = torch.randn((N_CAMERAS, 3, 3))
+        cam = FoVPerspectiveCameras(znear=10.0, zfar=100.0, R=R_matrix)
+
+        # Check get item returns an instance of the same class
+        # with all the same keys
+        c0 = cam[0]
+        self.assertTrue(isinstance(c0, FoVPerspectiveCameras))
+        self.assertEqual(cam.__dict__.keys(), c0.__dict__.keys())
+
+        # Check all fields correct in get item with int index
+        self.assertEqual(len(c0), 1)
+        self.assertClose(c0.zfar, torch.tensor([100.0]))
+        self.assertClose(c0.znear, torch.tensor([10.0]))
+        self.assertClose(c0.R, R_matrix[0:1, ...])
+        self.assertEqual(c0.device, torch.device("cpu"))
+
+        # Check list(int) index
+        c012 = cam[[0, 1, 2]]
+        self.assertEqual(len(c012), 3)
+        self.assertClose(c012.zfar, torch.tensor([100.0] * 3))
+        self.assertClose(c012.znear, torch.tensor([10.0] * 3))
+        self.assertClose(c012.R, R_matrix[0:3, ...])
+
+        # Check torch.LongTensor index
+        SLICE = [1, 3, 5]
+        index = torch.tensor(SLICE, dtype=torch.int64)
+        c135 = cam[index]
+        self.assertEqual(len(c135), 3)
+        self.assertClose(c135.zfar, torch.tensor([100.0] * 3))
+        self.assertClose(c135.znear, torch.tensor([10.0] * 3))
+        self.assertClose(c135.R, R_matrix[SLICE, ...])
+
+        # Check torch.BoolTensor index
+        bool_slice = [i in SLICE for i in range(N_CAMERAS)]
+        index = torch.tensor(bool_slice, dtype=torch.bool)
+        c135 = cam[index]
+        self.assertEqual(len(c135), 3)
+        self.assertClose(c135.zfar, torch.tensor([100.0] * 3))
+        self.assertClose(c135.znear, torch.tensor([10.0] * 3))
+        self.assertClose(c135.R, R_matrix[SLICE, ...])
+
+        # Check errors with get item
+        with self.assertRaisesRegex(IndexError, "out of bounds"):
+            cam[N_CAMERAS]
+
+        with self.assertRaisesRegex(ValueError, "does not match cameras"):
+            index = torch.tensor([1, 0, 1], dtype=torch.bool)
+            cam[index]
+
+        with self.assertRaisesRegex(ValueError, "Invalid index type"):
+            cam[slice(0, 1)]
+
+        with self.assertRaisesRegex(ValueError, "Invalid index type"):
+            cam[[True, False]]
+
+        with self.assertRaisesRegex(ValueError, "Invalid index type"):
+            index = torch.tensor(SLICE, dtype=torch.float32)
+            cam[index]
 
     def test_get_full_transform(self):
         cam = FoVPerspectiveCameras()
@@ -821,7 +1057,7 @@ class TestFoVPerspectiveProjection(TestCaseMixin, unittest.TestCase):
     def test_perspective_type(self):
         cam = FoVPerspectiveCameras(znear=1.0, zfar=10.0, fov=60.0)
         self.assertTrue(cam.is_perspective())
-        self.assertEquals(cam.get_znear(), 1.0)
+        self.assertEqual(cam.get_znear(), 1.0)
 
 
 ############################################################
@@ -917,7 +1153,31 @@ class TestFoVOrthographicProjection(TestCaseMixin, unittest.TestCase):
     def test_perspective_type(self):
         cam = FoVOrthographicCameras(znear=1.0, zfar=10.0)
         self.assertFalse(cam.is_perspective())
-        self.assertEquals(cam.get_znear(), 1.0)
+        self.assertEqual(cam.get_znear(), 1.0)
+
+    def test_getitem(self):
+        R_matrix = torch.randn((6, 3, 3))
+        scale = torch.tensor([[1.0, 1.0, 1.0]], requires_grad=True)
+        cam = FoVOrthographicCameras(
+            znear=10.0, zfar=100.0, R=R_matrix, scale_xyz=scale
+        )
+
+        # Check get item returns an instance of the same class
+        # with all the same keys
+        c0 = cam[0]
+        self.assertTrue(isinstance(c0, FoVOrthographicCameras))
+        self.assertEqual(cam.__dict__.keys(), c0.__dict__.keys())
+
+        # Check torch.LongTensor index
+        index = torch.tensor([1, 3, 5], dtype=torch.int64)
+        c135 = cam[index]
+        self.assertEqual(len(c135), 3)
+        self.assertClose(c135.zfar, torch.tensor([100.0] * 3))
+        self.assertClose(c135.znear, torch.tensor([10.0] * 3))
+        self.assertClose(c135.min_x, torch.tensor([-1.0] * 3))
+        self.assertClose(c135.max_x, torch.tensor([1.0] * 3))
+        self.assertClose(c135.R, R_matrix[[1, 3, 5], ...])
+        self.assertClose(c135.scale_xyz, scale.expand(3, -1))
 
 
 ############################################################
@@ -974,7 +1234,31 @@ class TestOrthographicProjection(TestCaseMixin, unittest.TestCase):
     def test_perspective_type(self):
         cam = OrthographicCameras(focal_length=5.0, principal_point=((2.5, 2.5),))
         self.assertFalse(cam.is_perspective())
-        self.assertEquals(cam.get_znear(), None)
+        self.assertIsNone(cam.get_znear())
+
+    def test_getitem(self):
+        R_matrix = torch.randn((6, 3, 3))
+        principal_point = torch.randn((6, 2, 1))
+        focal_length = 5.0
+        cam = OrthographicCameras(
+            R=R_matrix,
+            focal_length=focal_length,
+            principal_point=principal_point,
+        )
+
+        # Check get item returns an instance of the same class
+        # with all the same keys
+        c0 = cam[0]
+        self.assertTrue(isinstance(c0, OrthographicCameras))
+        self.assertEqual(cam.__dict__.keys(), c0.__dict__.keys())
+
+        # Check torch.LongTensor index
+        index = torch.tensor([1, 3, 5], dtype=torch.int64)
+        c135 = cam[index]
+        self.assertEqual(len(c135), 3)
+        self.assertClose(c135.focal_length, torch.tensor([[5.0, 5.0]] * 3))
+        self.assertClose(c135.R, R_matrix[[1, 3, 5], ...])
+        self.assertClose(c135.principal_point, principal_point[[1, 3, 5], ...])
 
 
 ############################################################
@@ -1026,4 +1310,423 @@ class TestPerspectiveProjection(TestCaseMixin, unittest.TestCase):
     def test_perspective_type(self):
         cam = PerspectiveCameras(focal_length=5.0, principal_point=((2.5, 2.5),))
         self.assertTrue(cam.is_perspective())
-        self.assertEquals(cam.get_znear(), None)
+        self.assertIsNone(cam.get_znear())
+
+    def test_getitem(self):
+        R_matrix = torch.randn((6, 3, 3))
+        principal_point = torch.randn((6, 2, 1))
+        focal_length = 5.0
+        cam = PerspectiveCameras(
+            R=R_matrix,
+            focal_length=focal_length,
+            principal_point=principal_point,
+        )
+
+        # Check get item returns an instance of the same class
+        # with all the same keys
+        c0 = cam[0]
+        self.assertTrue(isinstance(c0, PerspectiveCameras))
+        self.assertEqual(cam.__dict__.keys(), c0.__dict__.keys())
+
+        # Check torch.LongTensor index
+        index = torch.tensor([1, 3, 5], dtype=torch.int64)
+        c135 = cam[index]
+        self.assertEqual(len(c135), 3)
+        self.assertClose(c135.focal_length, torch.tensor([[5.0, 5.0]] * 3))
+        self.assertClose(c135.R, R_matrix[[1, 3, 5], ...])
+        self.assertClose(c135.principal_point, principal_point[[1, 3, 5], ...])
+
+        # Check in_ndc is handled correctly
+        self.assertEqual(cam._in_ndc, c0._in_ndc)
+
+    def test_clone_picklable(self):
+        camera = PerspectiveCameras()
+        pickle.dumps(camera)
+        pickle.dumps(camera.clone())
+
+
+############################################################
+#                FishEye Camera                        #
+############################################################
+
+
+class TestFishEyeProjection(TestCaseMixin, unittest.TestCase):
+    def setUpSimpleCase(self) -> None:
+        super().setUp()
+        focal = torch.tensor([[240]], dtype=torch.float32)
+        principal_point = torch.tensor([[320, 240]])
+        p_3d = torch.tensor(
+            [
+                [2.0, 3.0, 1.0],
+                [3.0, 2.0, 1.0],
+            ],
+            dtype=torch.float32,
+        )
+        return focal, principal_point, p_3d
+
+    def setUpAriaCase(self) -> None:
+        super().setUp()
+        torch.manual_seed(42)
+        focal = torch.tensor([[608.9255557152]], dtype=torch.float32)
+        principal_point = torch.tensor(
+            [[712.0114821205, 706.8666571177]], dtype=torch.float32
+        )
+        radial_params = torch.tensor(
+            [
+                [
+                    0.3877090026,
+                    -0.315613384,
+                    -0.3434984955,
+                    1.8565874201,
+                    -2.1799372221,
+                    0.7713834763,
+                ],
+            ],
+            dtype=torch.float32,
+        )
+        tangential_params = torch.tensor(
+            [[-0.0002747019, 0.0005228974]], dtype=torch.float32
+        )
+        thin_prism_params = torch.tensor(
+            [
+                [0.000134884, -0.000084822, -0.0009420014, -0.0001276838],
+            ],
+            dtype=torch.float32,
+        )
+        return (
+            focal,
+            principal_point,
+            radial_params,
+            tangential_params,
+            thin_prism_params,
+        )
+
+    def setUpBatchCameras(self, combination: None) -> None:
+        super().setUp()
+        focal, principal_point, p_3d = self.setUpSimpleCase()
+        radial_params = torch.tensor(
+            [
+                [0, 0, 0, 0, 0, 0],
+            ],
+            dtype=torch.float32,
+        )
+        tangential_params = torch.tensor([[0, 0]], dtype=torch.float32)
+        thin_prism_params = torch.tensor([[0, 0, 0, 0]], dtype=torch.float32)
+        (
+            focal1,
+            principal_point1,
+            radial_params1,
+            tangential_params1,
+            thin_prism_params1,
+        ) = self.setUpAriaCase()
+        focal = torch.cat([focal, focal1], dim=0)
+        principal_point = torch.cat([principal_point, principal_point1], dim=0)
+        radial_params = torch.cat([radial_params, radial_params1], dim=0)
+        tangential_params = torch.cat([tangential_params, tangential_params1], dim=0)
+        thin_prism_params = torch.cat([thin_prism_params, thin_prism_params1], dim=0)
+        if combination is None:
+            combination = [True, True, True]
+        cameras = FishEyeCameras(
+            use_radial=combination[0],
+            use_tangential=combination[1],
+            use_thin_prism=combination[2],
+            focal_length=focal,
+            principal_point=principal_point,
+            radial_params=radial_params,
+            tangential_params=tangential_params,
+            thin_prism_params=thin_prism_params,
+        )
+
+        return cameras
+
+    def test_distortion_params_set_to_zeors(self):
+        # test case 1: all distortion params are 0. Note that
+        # setting radial_params to zeros is not equivalent to
+        # disabling radial distortions, set use_radial=False does
+        focal, principal_point, p_3d = self.setUpSimpleCase()
+        cameras = FishEyeCameras(
+            focal_length=focal,
+            principal_point=principal_point,
+        )
+        uv_case1 = cameras.transform_points(p_3d)
+        self.assertClose(
+            uv_case1,
+            torch.tensor(
+                [[493.0993, 499.6489, 1.0], [579.6489, 413.0993, 1.0]],
+            ),
+        )
+        # test case 2: equivalent of test case 1 by
+        # disabling use_tangential and use_thin_prism
+        cameras = FishEyeCameras(
+            focal_length=focal,
+            principal_point=principal_point,
+            use_tangential=False,
+            use_thin_prism=False,
+        )
+        uv_case2 = cameras.transform_points(p_3d)
+        self.assertClose(uv_case2, uv_case1)
+
+    def test_fisheye_against_perspective_cameras(self):
+        # test case: check equivalence with PerspectiveCameras
+        # by disabling all distortions
+        focal, principal_point, p_3d = self.setUpSimpleCase()
+        cameras = PerspectiveCameras(
+            focal_length=focal,
+            principal_point=principal_point,
+        )
+        P = cameras.get_projection_transform()
+        uv_perspective = P.transform_points(p_3d)
+
+        # disable all distortions
+        cameras = FishEyeCameras(
+            focal_length=focal,
+            principal_point=principal_point,
+            use_radial=False,
+            use_tangential=False,
+            use_thin_prism=False,
+        )
+        uv = cameras.transform_points(p_3d)
+        self.assertClose(uv, uv_perspective)
+
+    def test_project_shape_broadcasts(self):
+        focal, principal_point, p_3d = self.setUpSimpleCase()
+        torch.set_printoptions(precision=6)
+        combinations = product([0, 1], repeat=3)
+        for combination in combinations:
+            cameras = FishEyeCameras(
+                use_radial=combination[0],
+                use_tangential=combination[1],
+                use_thin_prism=combination[2],
+                focal_length=focal,
+                principal_point=principal_point,
+            )
+            # test case 1:
+            # 1 transform with points of shape (P, 3) -> (P, 3)
+            # 1 transform with points of shape (1, P, 3) -> (1, P, 3)
+            # 1 transform with points of shape (M, P, 3) -> (M, P, 3)
+            points = p_3d.repeat(1, 1, 1)
+            cameras = FishEyeCameras(
+                focal_length=focal,
+                principal_point=principal_point,
+                use_radial=False,
+                use_tangential=False,
+                use_thin_prism=False,
+            )
+            uv = cameras.transform_points(p_3d)
+            uv_point_batch = cameras.transform_points(points)
+            self.assertClose(uv_point_batch, uv.repeat(1, 1, 1))
+
+        points = p_3d.repeat(3, 1, 1)
+        uv_point_batch = cameras.transform_points(points)
+        self.assertClose(uv_point_batch, uv.repeat(3, 1, 1))
+
+        # test case 2
+        # test with N transforms and points of shape (P, 3) -> (N, P, 3)
+        # test with N transforms and points of shape (1, P, 3) -> (N, P, 3)
+        torch.set_printoptions(sci_mode=False)
+        p_3d = torch.tensor(
+            [
+                [2.0, 3.0, 1.0],
+                [3.0, 2.0, 1.0],
+            ]
+        )
+        expected_res = torch.tensor(
+            [
+                [
+                    [
+                        [800.000000, 960.000000, 1.000000],
+                        [1040.000000, 720.000000, 1.000000],
+                    ],
+                    [
+                        [1929.862549, 2533.643311, 1.000000],
+                        [2538.788086, 1924.717773, 1.000000],
+                    ],
+                ],
+                [
+                    [
+                        [800.000000, 960.000000, 1.000000],
+                        [1040.000000, 720.000000, 1.000000],
+                    ],
+                    [
+                        [1927.272095, 2524.220459, 1.000000],
+                        [2536.197754, 1915.295166, 1.000000],
+                    ],
+                ],
+                [
+                    [
+                        [800.000000, 960.000000, 1.000000],
+                        [1040.000000, 720.000000, 1.000000],
+                    ],
+                    [
+                        [1930.050293, 2538.434814, 1.000000],
+                        [2537.956543, 1927.569092, 1.000000],
+                    ],
+                ],
+                [
+                    [
+                        [800.000000, 960.000000, 1.000000],
+                        [1040.000000, 720.000000, 1.000000],
+                    ],
+                    [
+                        [1927.459839, 2529.011963, 1.000000],
+                        [2535.366211, 1918.146484, 1.000000],
+                    ],
+                ],
+                [
+                    [
+                        [493.099304, 499.648926, 1.000000],
+                        [579.648926, 413.099304, 1.000000],
+                    ],
+                    [
+                        [1662.673950, 2132.860352, 1.000000],
+                        [2138.005127, 1657.529053, 1.000000],
+                    ],
+                ],
+                [
+                    [
+                        [493.099304, 499.648926, 1.000000],
+                        [579.648926, 413.099304, 1.000000],
+                    ],
+                    [
+                        [1660.083496, 2123.437744, 1.000000],
+                        [2135.414795, 1648.106445, 1.000000],
+                    ],
+                ],
+                [
+                    [
+                        [493.099304, 499.648926, 1.000000],
+                        [579.648926, 413.099304, 1.000000],
+                    ],
+                    [
+                        [1662.861816, 2137.651855, 1.000000],
+                        [2137.173828, 1660.380371, 1.000000],
+                    ],
+                ],
+                [
+                    [
+                        [493.099304, 499.648926, 1.000000],
+                        [579.648926, 413.099304, 1.000000],
+                    ],
+                    [
+                        [1660.271240, 2128.229248, 1.000000],
+                        [2134.583496, 1650.957764, 1.000000],
+                    ],
+                ],
+            ]
+        )
+        combinations = product([0, 1], repeat=3)
+        for i, combination in enumerate(combinations):
+            cameras = self.setUpBatchCameras(combination)
+            uv_point_batch = cameras.transform_points(p_3d)
+            self.assertClose(uv_point_batch, expected_res[i])
+
+            uv_point_batch = cameras.transform_points(p_3d.repeat(1, 1, 1))
+            self.assertClose(uv_point_batch, expected_res[i].repeat(1, 1, 1))
+
+    def test_cuda(self):
+        """
+        Test cuda device
+        """
+        focal, principal_point, p_3d = self.setUpSimpleCase()
+        cameras_cuda = FishEyeCameras(
+            focal_length=focal,
+            principal_point=principal_point,
+            device="cuda:0",
+        )
+        uv = cameras_cuda.transform_points(p_3d)
+        expected_res = torch.tensor(
+            [[493.0993, 499.6489, 1.0], [579.6489, 413.0993, 1.0]],
+        )
+        self.assertClose(uv, expected_res.to("cuda:0"))
+
+        rep_3d = cameras_cuda.unproject_points(uv)
+        self.assertClose(rep_3d, p_3d.to("cuda:0"))
+
+    def test_unproject_shape_broadcasts(self):
+        # test case 1:
+        # 1 transform with points of (P, 3) -> (P, 3)
+        # 1 transform with points of (M, P, 3) -> (M, P, 3)
+        (
+            focal,
+            principal_point,
+            radial_params,
+            tangential_params,
+            thin_prism_params,
+        ) = self.setUpAriaCase()
+        xy_depth = torch.tensor(
+            [
+                [2134.5814033, 1650.95653328, 1.0],
+                [1074.25442904, 1159.52461285, 1.0],
+            ]
+        )
+        cameras = FishEyeCameras(
+            focal_length=focal,
+            principal_point=principal_point,
+            radial_params=radial_params,
+            tangential_params=tangential_params,
+            thin_prism_params=thin_prism_params,
+        )
+        rep_3d = cameras.unproject_points(xy_depth)
+        expected_res = torch.tensor(
+            [
+                [[2.999442, 1.990583, 1.000000], [0.666728, 0.833142, 1.000000]],
+                [[2.997338, 2.005411, 1.000000], [0.666859, 0.834456, 1.000000]],
+                [[3.002090, 1.985229, 1.000000], [0.666537, 0.832025, 1.000000]],
+                [[2.999999, 2.000000, 1.000000], [0.666667, 0.833333, 1.000000]],
+                [[2.999442, 1.990583, 1.000000], [0.666728, 0.833142, 1.000000]],
+                [[2.997338, 2.005411, 1.000000], [0.666859, 0.834456, 1.000000]],
+                [[3.002090, 1.985229, 1.000000], [0.666537, 0.832025, 1.000000]],
+                [[2.999999, 2.000000, 1.000000], [0.666667, 0.833333, 1.000000]],
+            ]
+        )
+        torch.set_printoptions(precision=6)
+        combinations = product([0, 1], repeat=3)
+        for i, combination in enumerate(combinations):
+            cameras = FishEyeCameras(
+                use_radial=combination[0],
+                use_tangential=combination[1],
+                use_thin_prism=combination[2],
+                focal_length=focal,
+                principal_point=principal_point,
+                radial_params=radial_params,
+                tangential_params=tangential_params,
+                thin_prism_params=thin_prism_params,
+            )
+            rep_3d = cameras.unproject_points(xy_depth)
+            self.assertClose(rep_3d, expected_res[i])
+            rep_3d = cameras.unproject_points(xy_depth.repeat(3, 1, 1))
+            self.assertClose(rep_3d, expected_res[i].repeat(3, 1, 1))
+
+            # test case 2:
+            # N transforms with points of (P, 3) -> (N, P, 3)
+            # N transforms with points of (1, P, 3) -> (N, P, 3)
+            cameras = FishEyeCameras(
+                use_radial=combination[0],
+                use_tangential=combination[1],
+                use_thin_prism=combination[2],
+                focal_length=focal.repeat(2, 1),
+                principal_point=principal_point.repeat(2, 1),
+                radial_params=radial_params.repeat(2, 1),
+                tangential_params=tangential_params.repeat(2, 1),
+                thin_prism_params=thin_prism_params.repeat(2, 1),
+            )
+            rep_3d = cameras.unproject_points(xy_depth)
+            self.assertClose(rep_3d, expected_res[i].repeat(2, 1, 1))
+
+    def test_unhandled_shape(self):
+        """
+        Test error handling when shape of transforms
+        and points are not expected.
+        """
+        cameras = self.setUpBatchCameras(None)
+        points = torch.rand(3, 3, 1)
+        with self.assertRaises(ValueError):
+            cameras.transform_points(points)
+
+    def test_getitem(self):
+        # Check get item returns an instance of the same class
+        # with all the same keys
+        cam = self.setUpBatchCameras(None)
+        c0 = cam[0]
+        self.assertTrue(isinstance(c0, FishEyeCameras))
+        self.assertEqual(cam.__dict__.keys(), c0.__dict__.keys())

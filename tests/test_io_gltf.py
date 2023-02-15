@@ -1,25 +1,25 @@
-# Copyright (c) Facebook, Inc. and its affiliates.
+# Copyright (c) Meta Platforms, Inc. and affiliates.
 # All rights reserved.
 #
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
+import os.path
 import unittest
 from math import radians
 
 import numpy as np
 import torch
-from common_testing import TestCaseMixin, get_pytorch3d_dir, get_tests_dir
 from PIL import Image
 from pytorch3d.io import IO
-from pytorch3d.io.experimental_gltf_io import MeshGlbFormat
+from pytorch3d.io.experimental_gltf_io import _read_header, MeshGlbFormat
 from pytorch3d.renderer import (
     AmbientLights,
     BlendParams,
     FoVPerspectiveCameras,
+    look_at_view_transform,
     PointLights,
     RasterizationSettings,
-    look_at_view_transform,
     rotate_on_spot,
 )
 from pytorch3d.renderer.mesh import (
@@ -30,7 +30,10 @@ from pytorch3d.renderer.mesh import (
 )
 from pytorch3d.structures import Meshes
 from pytorch3d.transforms import axis_angle_to_matrix
+from pytorch3d.utils import ico_sphere
 from pytorch3d.vis.texture_vis import texturesuv_image_PIL
+
+from .common_testing import get_pytorch3d_dir, get_tests_dir, TestCaseMixin
 
 
 DATA_DIR = get_tests_dir() / "data"
@@ -42,6 +45,16 @@ def _load(path, **kwargs) -> Meshes:
     io = IO()
     io.register_meshes_format(MeshGlbFormat())
     return io.load_mesh(path, **kwargs)
+
+
+def _write(mesh, path, **kwargs) -> None:
+    io = IO()
+    io.register_meshes_format(MeshGlbFormat())
+    io.save_mesh(mesh, path, **kwargs)
+
+    with open(path, "rb") as f:
+        _, stored_length = _read_header(f)
+    assert stored_length == os.path.getsize(path)
 
 
 def _render(
@@ -143,9 +156,7 @@ class TestMeshGltfIO(TestCaseMixin, unittest.TestCase):
         self.assertEqual(mesh.faces_packed().shape, (5856, 3))
         self.assertEqual(mesh.verts_packed().shape, (3225, 3))
         mesh_obj = _load(TUTORIAL_DATA_DIR / "cow_mesh/cow.obj")
-        self.assertClose(
-            mesh_obj.get_bounding_boxes().cpu(), mesh_obj.get_bounding_boxes()
-        )
+        self.assertClose(mesh.get_bounding_boxes().cpu(), mesh_obj.get_bounding_boxes())
 
         self.assertClose(
             mesh.textures.verts_uvs_padded().cpu(), mesh_obj.textures.verts_uvs_padded()
@@ -168,6 +179,69 @@ class TestMeshGltfIO(TestCaseMixin, unittest.TestCase):
 
             self.assertClose(image, expected)
 
+    def test_save_cow(self):
+        """
+        Save the cow mesh to a glb file
+        """
+        # load cow mesh from a glb file
+        glb = DATA_DIR / "cow.glb"
+        self.assertTrue(glb.is_file())
+        device = torch.device("cuda:0")
+        mesh = _load(glb, device=device)
+
+        # save the mesh to a glb file
+        glb = DATA_DIR / "cow_write.glb"
+        _write(mesh, glb)
+
+        # load again
+        glb_reload = DATA_DIR / "cow_write.glb"
+        self.assertTrue(glb_reload.is_file())
+        device = torch.device("cuda:0")
+        mesh_reload = _load(glb_reload, device=device)
+
+        # assertions
+        self.assertEqual(mesh_reload.faces_packed().shape, (5856, 3))
+        self.assertEqual(mesh_reload.verts_packed().shape, (3225, 3))
+        self.assertClose(
+            mesh_reload.get_bounding_boxes().cpu(), mesh.get_bounding_boxes().cpu()
+        )
+
+        self.assertClose(
+            mesh_reload.textures.verts_uvs_padded().cpu(),
+            mesh.textures.verts_uvs_padded().cpu(),
+        )
+
+        self.assertClose(
+            mesh_reload.textures.faces_uvs_padded().cpu(),
+            mesh.textures.faces_uvs_padded().cpu(),
+        )
+
+        self.assertClose(
+            mesh_reload.textures.maps_padded().cpu(), mesh.textures.maps_padded().cpu()
+        )
+
+    def test_save_ico_sphere(self):
+        """
+        save the ico_sphere mesh in a glb file
+        """
+        ico_sphere_mesh = ico_sphere(level=3)
+        glb = DATA_DIR / "ico_sphere.glb"
+        _write(ico_sphere_mesh, glb)
+
+        # reload the ico_sphere
+        device = torch.device("cuda:0")
+        mesh_reload = _load(glb, device=device, include_textures=False)
+
+        self.assertClose(
+            ico_sphere_mesh.verts_padded().cpu(),
+            mesh_reload.verts_padded().cpu(),
+        )
+
+        self.assertClose(
+            ico_sphere_mesh.faces_padded().cpu(),
+            mesh_reload.faces_padded().cpu(),
+        )
+
     def test_load_cow_no_texture(self):
         """
         Load the cow as converted to a single mesh in a glb file.
@@ -182,9 +256,7 @@ class TestMeshGltfIO(TestCaseMixin, unittest.TestCase):
         self.assertEqual(mesh.faces_packed().shape, (5856, 3))
         self.assertEqual(mesh.verts_packed().shape, (3225, 3))
         mesh_obj = _load(TUTORIAL_DATA_DIR / "cow_mesh/cow.obj")
-        self.assertClose(
-            mesh_obj.get_bounding_boxes().cpu(), mesh_obj.get_bounding_boxes()
-        )
+        self.assertClose(mesh.get_bounding_boxes().cpu(), mesh_obj.get_bounding_boxes())
 
         mesh.textures = TexturesVertex(0.5 * torch.ones_like(mesh.verts_padded()))
 

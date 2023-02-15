@@ -1,4 +1,4 @@
-# Copyright (c) Facebook, Inc. and its affiliates.
+# Copyright (c) Meta Platforms, Inc. and affiliates.
 # All rights reserved.
 #
 # This source code is licensed under the BSD-style license found in the
@@ -10,7 +10,6 @@ import unittest
 
 import numpy as np
 import torch
-from common_testing import TestCaseMixin, get_tests_dir
 from pytorch3d.ops import eyes
 from pytorch3d.renderer.points.pulsar import Renderer as PulsarRenderer
 from pytorch3d.transforms import so3_exp_map, so3_log_map
@@ -19,6 +18,8 @@ from pytorch3d.utils import (
     opencv_from_cameras_projection,
     pulsar_from_opencv_projection,
 )
+
+from .common_testing import get_tests_dir, TestCaseMixin
 
 
 DATA_DIR = get_tests_dir() / "data"
@@ -68,7 +69,7 @@ class TestCameraConversions(TestCaseMixin, unittest.TestCase):
         return correct projections of random 3D points. The check is done
         against a set of results precomuted using `cv2.projectPoints` function.
         """
-
+        device = torch.device("cuda:0")
         image_size = [[480, 640]] * 4
         R = [
             [
@@ -116,17 +117,19 @@ class TestCameraConversions(TestCaseMixin, unittest.TestCase):
         ]
 
         principal_point, focal_length, R, tvec, image_size = [
-            torch.FloatTensor(x)
+            torch.tensor(x, device=device)
             for x in (principal_point, focal_length, R, tvec, image_size)
         ]
-        camera_matrix = eyes(dim=3, N=4)
+        camera_matrix = eyes(dim=3, N=4, device=device)
         camera_matrix[:, 0, 0], camera_matrix[:, 1, 1] = (
             focal_length[:, 0],
             focal_length[:, 1],
         )
         camera_matrix[:, :2, 2] = principal_point
 
-        pts = torch.nn.functional.normalize(torch.randn(4, 1000, 3), dim=-1)
+        pts = torch.nn.functional.normalize(
+            torch.randn(4, 1000, 3, device=device), dim=-1
+        )
 
         # project the 3D points with the opencv projection function
         rvec = so3_log_map(R)
@@ -136,6 +139,7 @@ class TestCameraConversions(TestCaseMixin, unittest.TestCase):
         cameras_opencv_to_pytorch3d = cameras_from_opencv_projection(
             R, tvec, camera_matrix, image_size
         )
+        self.assertEqual(cameras_opencv_to_pytorch3d.device, device)
 
         # project the 3D points with converted cameras to screen space.
         pts_proj_pytorch3d_screen = cameras_opencv_to_pytorch3d.transform_points_screen(

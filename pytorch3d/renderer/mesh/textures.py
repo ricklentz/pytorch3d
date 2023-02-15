@@ -1,4 +1,4 @@
-# Copyright (c) Facebook, Inc. and its affiliates.
+# Copyright (c) Meta Platforms, Inc. and affiliates.
 # All rights reserved.
 #
 # This source code is licensed under the BSD-style license found in the
@@ -6,7 +6,7 @@
 
 import itertools
 import warnings
-from typing import TYPE_CHECKING, Dict, List, Optional, Tuple, Union
+from typing import Dict, List, Optional, Tuple, TYPE_CHECKING, Union
 
 import torch
 import torch.nn.functional as F
@@ -14,7 +14,7 @@ from pytorch3d.ops import interpolate_face_attributes
 from pytorch3d.structures.utils import list_to_packed, list_to_padded, padded_to_list
 from torch.nn.functional import interpolate
 
-from .utils import PackedRectangle, Rectangle, pack_unique_rectangles
+from .utils import pack_unique_rectangles, PackedRectangle, Rectangle
 
 
 # This file contains classes and helper functions for texturing.
@@ -66,8 +66,11 @@ def _list_to_padded_wrapper(
                 "list_to_padded requires tensors to have the same number of dimensions"
             )
             raise ValueError(msg)
+        # pyre-fixme[6]: For 2nd param expected `int` but got `Union[bool, float, int]`.
         x_reshaped.append(y.reshape(-1, D))
     x_padded = list_to_padded(x_reshaped, pad_size=pad_size, pad_value=pad_value)
+    # pyre-fixme[58]: `+` is not supported for operand types `Tuple[int, int]` and
+    #  `Size`.
     return x_padded.reshape((N, -1) + reshape_dims)
 
 
@@ -96,8 +99,11 @@ def _padded_to_list_wrapper(
     N, M = x.shape[:2]
     reshape_dims = x.shape[2:]
     D = torch.prod(torch.tensor(reshape_dims)).item()
+    # pyre-fixme[6]: For 3rd param expected `int` but got `Union[bool, float, int]`.
     x_reshaped = x.reshape(N, M, D)
     x_list = padded_to_list(x_reshaped, split_size=split_size)
+    # pyre-fixme[58]: `+` is not supported for operand types `Tuple[typing.Any]` and
+    #  `Size`.
     x_list = [xl.reshape((xl.shape[0],) + reshape_dims) for xl in x_list]
     return x_list
 
@@ -131,7 +137,10 @@ def _pad_texture_maps(
         if image.shape[:2] != max_shape:
             image_BCHW = image.permute(2, 0, 1)[None]
             new_image_BCHW = interpolate(
-                image_BCHW, size=max_shape, mode="bilinear", align_corners=align_corners
+                image_BCHW,
+                size=max_shape,
+                mode="bilinear",
+                align_corners=align_corners,
             )
             tex_maps[i] = new_image_BCHW[0].permute(1, 2, 0)
     tex_maps = torch.stack(tex_maps, dim=0)  # (num_tex_maps, max_H, max_W, C)
@@ -236,6 +245,16 @@ class TexturesBase:
         each pixel in the output image.
         """
         raise NotImplementedError()
+
+    def submeshes(
+        self,
+        vertex_ids_list: List[List[torch.LongTensor]],
+        faces_ids_list: List[List[torch.LongTensor]],
+    ) -> "TexturesBase":
+        """
+        Extract sub-textures used for submeshing.
+        """
+        raise NotImplementedError(f"{self.__class__} does not support submeshes")
 
     def faces_verts_textures_packed(self) -> torch.Tensor:
         """
@@ -564,7 +583,7 @@ class TexturesAtlas(TexturesBase):
 
         atlas_list = []
         atlas_list += self.atlas_list()
-        num_faces_per_mesh = self._num_faces_per_mesh
+        num_faces_per_mesh = self._num_faces_per_mesh.copy()
         for tex in textures:
             atlas_list += tex.atlas_list()
             num_faces_per_mesh += tex._num_faces_per_mesh
@@ -596,6 +615,7 @@ class TexturesUV(TexturesBase):
         verts_uvs: Union[torch.Tensor, List[torch.Tensor], Tuple[torch.Tensor]],
         padding_mode: str = "border",
         align_corners: bool = True,
+        sampling_mode: str = "bilinear",
     ) -> None:
         """
         Textures are represented as a per mesh texture map and uv coordinates for each
@@ -613,6 +633,9 @@ class TexturesUV(TexturesBase):
                             indicate the centers of the edge pixels in the maps.
             padding_mode: padding mode for outside grid values
                                 ("zeros", "border" or "reflection").
+            sampling_mode: type of interpolation used to sample the texture.
+                            Corresponds to the mode parameter in PyTorch's
+                            grid_sample ("nearest" or "bilinear").
 
         The align_corners and padding_mode arguments correspond to the arguments
         of the `grid_sample` torch function. There is an informative illustration of
@@ -641,6 +664,7 @@ class TexturesUV(TexturesBase):
         """
         self.padding_mode = padding_mode
         self.align_corners = align_corners
+        self.sampling_mode = sampling_mode
         if isinstance(faces_uvs, (list, tuple)):
             for fv in faces_uvs:
                 if fv.ndim != 2 or fv.shape[-1] != 3:
@@ -749,6 +773,9 @@ class TexturesUV(TexturesBase):
             self.maps_padded().clone(),
             self.faces_uvs_padded().clone(),
             self.verts_uvs_padded().clone(),
+            align_corners=self.align_corners,
+            padding_mode=self.padding_mode,
+            sampling_mode=self.sampling_mode,
         )
         if self._maps_list is not None:
             tex._maps_list = [m.clone() for m in self._maps_list]
@@ -770,6 +797,9 @@ class TexturesUV(TexturesBase):
             self.maps_padded().detach(),
             self.faces_uvs_padded().detach(),
             self.verts_uvs_padded().detach(),
+            align_corners=self.align_corners,
+            padding_mode=self.padding_mode,
+            sampling_mode=self.sampling_mode,
         )
         if self._maps_list is not None:
             tex._maps_list = [m.detach() for m in self._maps_list]
@@ -801,6 +831,7 @@ class TexturesUV(TexturesBase):
                 maps=maps,
                 padding_mode=self.padding_mode,
                 align_corners=self.align_corners,
+                sampling_mode=self.sampling_mode,
             )
         elif all(torch.is_tensor(f) for f in [faces_uvs, verts_uvs, maps]):
             new_tex = self.__class__(
@@ -809,6 +840,7 @@ class TexturesUV(TexturesBase):
                 maps=[maps],
                 padding_mode=self.padding_mode,
                 align_corners=self.align_corners,
+                sampling_mode=self.sampling_mode,
             )
         else:
             raise ValueError("Not all values are provided in the correct format")
@@ -889,6 +921,7 @@ class TexturesUV(TexturesBase):
             verts_uvs=new_props["verts_uvs_padded"],
             padding_mode=self.padding_mode,
             align_corners=self.align_corners,
+            sampling_mode=self.sampling_mode,
         )
 
         new_tex._num_faces_per_mesh = new_props["_num_faces_per_mesh"]
@@ -966,6 +999,7 @@ class TexturesUV(TexturesBase):
         texels = F.grid_sample(
             texture_maps,
             pixel_uvs,
+            mode=self.sampling_mode,
             align_corners=self.align_corners,
             padding_mode=self.padding_mode,
         )
@@ -1003,6 +1037,7 @@ class TexturesUV(TexturesBase):
         textures = F.grid_sample(
             texture_maps,
             faces_verts_uvs,
+            mode=self.sampling_mode,
             align_corners=self.align_corners,
             padding_mode=self.padding_mode,
         )  # NxCxmax(Fi)x3
@@ -1040,6 +1075,11 @@ class TexturesUV(TexturesBase):
         )
         if not align_corners_same:
             raise ValueError("All textures must have the same align_corners value.")
+        sampling_mode_same = all(
+            tex.sampling_mode == self.sampling_mode for tex in textures
+        )
+        if not sampling_mode_same:
+            raise ValueError("All textures must have the same sampling_mode.")
 
         verts_uvs_list = []
         faces_uvs_list = []
@@ -1047,7 +1087,7 @@ class TexturesUV(TexturesBase):
         faces_uvs_list += self.faces_uvs_list()
         verts_uvs_list += self.verts_uvs_list()
         maps_list += self.maps_list()
-        num_faces_per_mesh = self._num_faces_per_mesh
+        num_faces_per_mesh = self._num_faces_per_mesh.copy()
         for tex in textures:
             verts_uvs_list += tex.verts_uvs_list()
             faces_uvs_list += tex.faces_uvs_list()
@@ -1060,6 +1100,7 @@ class TexturesUV(TexturesBase):
             faces_uvs=faces_uvs_list,
             padding_mode=self.padding_mode,
             align_corners=self.align_corners,
+            sampling_mode=self.sampling_mode,
         )
         new_tex._num_faces_per_mesh = num_faces_per_mesh
         return new_tex
@@ -1227,6 +1268,7 @@ class TexturesUV(TexturesBase):
             faces_uvs=[torch.cat(faces_uvs_merged)],
             align_corners=self.align_corners,
             padding_mode=self.padding_mode,
+            sampling_mode=self.sampling_mode,
         )
 
     def centers_for_image(self, index: int) -> torch.Tensor:
@@ -1259,6 +1301,7 @@ class TexturesUV(TexturesBase):
                 torch.flip(coords.to(texture_image), [2]),
                 # Convert from [0, 1] -> [-1, 1] range expected by grid sample
                 verts_uvs[:, None] * 2.0 - 1,
+                mode=self.sampling_mode,
                 align_corners=self.align_corners,
                 padding_mode=self.padding_mode,
             ).cpu()
@@ -1435,6 +1478,45 @@ class TexturesVertex(TexturesBase):
             fragments.pix_to_face, fragments.bary_coords, faces_verts_features
         )
         return texels
+
+    def submeshes(
+        self,
+        vertex_ids_list: List[List[torch.LongTensor]],
+        faces_ids_list: List[List[torch.LongTensor]],
+    ) -> "TexturesVertex":
+        """
+        Extract a sub-texture for use in a submesh.
+
+        If the meshes batch corresponding to this TexturesVertex contains
+        `n = len(vertex_ids_list)` meshes, then self.verts_features_list()
+        will be of length n. After submeshing, we obtain a batch of
+        `k = sum(len(v) for v in vertex_ids_list` submeshes (see Meshes.submeshes). This
+        function creates a corresponding TexturesVertex object with `verts_features_list`
+        of length `k`.
+
+        Args:
+            vertex_ids_list: A list of length equal to self.verts_features_list. Each
+                element is a LongTensor listing the vertices that the submesh keeps in
+                each respective mesh.
+
+            face_ids_list: Not used when submeshing TexturesVertex.
+
+        Returns:
+            A TexturesVertex in which verts_features_list has length
+            sum(len(vertices) for vertices in vertex_ids_list). Each element contains
+            vertex features corresponding to the subset of vertices in that submesh.
+        """
+        if len(vertex_ids_list) != len(self.verts_features_list()):
+            raise IndexError(
+                "verts_features_list must be of " "the same length as vertex_ids_list."
+            )
+
+        sub_features = []
+        for vertex_ids, features in zip(vertex_ids_list, self.verts_features_list()):
+            for vertex_ids_submesh in vertex_ids:
+                sub_features.append(features[vertex_ids_submesh])
+
+        return self.__class__(sub_features)
 
     def faces_verts_textures_packed(self, faces_packed=None) -> torch.Tensor:
         """

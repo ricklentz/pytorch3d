@@ -1,4 +1,4 @@
-# Copyright (c) Facebook, Inc. and its affiliates.
+# Copyright (c) Meta Platforms, Inc. and affiliates.
 # All rights reserved.
 #
 # This source code is licensed under the BSD-style license found in the
@@ -12,16 +12,17 @@ import unittest
 
 import numpy as np
 import torch
-from common_testing import TestCaseMixin, get_tests_dir, load_rgb_image
 from PIL import Image
-from pytorch3d.datasets import ShapeNetCore, collate_batched_meshes
+from pytorch3d.datasets import collate_batched_meshes, ShapeNetCore
 from pytorch3d.renderer import (
     FoVPerspectiveCameras,
+    look_at_view_transform,
     PointLights,
     RasterizationSettings,
-    look_at_view_transform,
 )
 from torch.utils.data import DataLoader
+
+from .common_testing import get_tests_dir, load_rgb_image, TestCaseMixin
 
 
 # Set the SHAPENET_PATH to the local path to the dataset

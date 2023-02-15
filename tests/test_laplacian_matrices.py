@@ -1,4 +1,4 @@
-# Copyright (c) Facebook, Inc. and its affiliates.
+# Copyright (c) Meta Platforms, Inc. and affiliates.
 # All rights reserved.
 #
 # This source code is licensed under the BSD-style license found in the
@@ -7,9 +7,10 @@
 import unittest
 
 import torch
-from common_testing import TestCaseMixin, get_random_cuda_device
 from pytorch3d.ops import cot_laplacian, laplacian, norm_laplacian
 from pytorch3d.structures.meshes import Meshes
+
+from .common_testing import get_random_cuda_device, TestCaseMixin
 
 
 class TestLaplacianMatrices(TestCaseMixin, unittest.TestCase):

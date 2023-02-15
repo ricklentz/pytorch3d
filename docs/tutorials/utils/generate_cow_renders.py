@@ -1,4 +1,4 @@
-# Copyright (c) Facebook, Inc. and its affiliates.
+# Copyright (c) Meta Platforms, Inc. and affiliates.
 # All rights reserved.
 #
 # This source code is licensed under the BSD-style license found in the
@@ -12,13 +12,13 @@ from pytorch3d.io import load_objs_as_meshes
 from pytorch3d.renderer import (
     BlendParams,
     FoVPerspectiveCameras,
+    look_at_view_transform,
     MeshRasterizer,
     MeshRenderer,
     PointLights,
     RasterizationSettings,
     SoftPhongShader,
     SoftSilhouetteShader,
-    look_at_view_transform,
 )
 
 
@@ -44,6 +44,8 @@ def generate_cow_renders(
         data_dir: The folder that contains the cow mesh files. If the cow mesh
             files do not exist in the folder, this function will automatically
             download them.
+        azimuth_range: number of degrees on each side of the start position to
+            take samples
 
     Returns:
         cameras: A batch of `num_views` `FoVPerspectiveCameras` from which the

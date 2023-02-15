@@ -1,4 +1,4 @@
-# Copyright (c) Facebook, Inc. and its affiliates.
+# Copyright (c) Meta Platforms, Inc. and affiliates.
 # All rights reserved.
 #
 # This source code is licensed under the BSD-style license found in the
@@ -9,7 +9,7 @@ from typing import Dict, List
 
 import numpy as np
 import torch
-from pytorch3d.common.types import Device
+from pytorch3d.common.datatypes import Device
 from pytorch3d.datasets.utils import collate_batched_meshes
 from pytorch3d.ops import cubify
 from pytorch3d.renderer import (
@@ -98,7 +98,9 @@ def collate_batched_R2N2(batch: List[Dict]):  # pragma: no cover
     return collated_dict
 
 
-def compute_extrinsic_matrix(azimuth, elevation, distance):  # pragma: no cover
+def compute_extrinsic_matrix(
+    azimuth: float, elevation: float, distance: float
+):  # pragma: no cover
     """
     Copied from meshrcnn codebase:
     https://github.com/facebookresearch/meshrcnn/blob/main/shapenet/utils/coords.py#L96
@@ -177,6 +179,7 @@ def read_binvox_coords(
     size, translation, scale = _read_binvox_header(f)
     storage = torch.ByteStorage.from_buffer(f.read())
     data = torch.tensor([], dtype=torch.uint8)
+    # pyre-fixme[28]: Unexpected keyword argument `source`.
     data.set_(source=storage)
     vals, counts = data[::2], data[1::2]
     idxs = _compute_idxs(vals, counts)
@@ -273,7 +276,7 @@ def _read_binvox_header(f):  # pragma: no cover
     try:
         dims = [int(d) for d in dims[1:]]
     except ValueError:
-        raise ValueError("Invalid header (line 2)")
+        raise ValueError("Invalid header (line 2)") from None
     if len(dims) != 3 or dims[0] != dims[1] or dims[0] != dims[2]:
         raise ValueError("Invalid header (line 2)")
     size = dims[0]
@@ -288,7 +291,7 @@ def _read_binvox_header(f):  # pragma: no cover
     try:
         translation = tuple(float(t) for t in translation[1:])
     except ValueError:
-        raise ValueError("Invalid header (line 3)")
+        raise ValueError("Invalid header (line 3)") from None
 
     # Fourth line of the header should be "scale [float]"
     line = f.readline().strip()
@@ -384,7 +387,7 @@ def voxelize(voxel_coords, P, V):  # pragma: no cover
     return voxels
 
 
-def project_verts(verts, P, eps=1e-1):  # pragma: no cover
+def project_verts(verts, P, eps: float = 1e-1):  # pragma: no cover
     """
     Copied from meshrcnn codebase:
     https://github.com/facebookresearch/meshrcnn/blob/main/shapenet/utils/coords.py#L159
@@ -455,6 +458,12 @@ class BlenderCamera(CamerasBase):  # pragma: no cover
         transform = Transform3d(device=self.device)
         transform._matrix = self.K.transpose(1, 2).contiguous()
         return transform
+
+    def is_perspective(self):
+        return False
+
+    def in_ndc(self):
+        return True
 
 
 def render_cubified_voxels(

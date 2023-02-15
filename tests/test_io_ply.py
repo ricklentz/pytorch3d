@@ -1,4 +1,4 @@
-# Copyright (c) Facebook, Inc. and its affiliates.
+# Copyright (c) Meta Platforms, Inc. and affiliates.
 # All rights reserved.
 #
 # This source code is licensed under the BSD-style license found in the
@@ -13,13 +13,14 @@ from tempfile import NamedTemporaryFile, TemporaryFile
 import numpy as np
 import pytorch3d.io.ply_io
 import torch
-from common_testing import TestCaseMixin
 from iopath.common.file_io import PathManager
 from pytorch3d.io import IO
 from pytorch3d.io.ply_io import load_ply, save_ply
 from pytorch3d.renderer.mesh import TexturesVertex
 from pytorch3d.structures import Meshes, Pointclouds
 from pytorch3d.utils import torus
+
+from .common_testing import TestCaseMixin
 
 
 global_path_manager = PathManager()
@@ -194,6 +195,15 @@ class TestMeshPlyIO(TestCaseMixin, unittest.TestCase):
                 ValueError, "No mesh interpreter found to read "
             ):
                 io.load_mesh(f3.name)
+
+    def test_heterogenous_verts_per_face(self):
+        # The cube but where one face is pentagon not square.
+        text = CUBE_PLY_LINES.copy()
+        text[-1] = "5 3 7 4 0 1"
+        stream = StringIO("\n".join(text))
+        verts, faces = load_ply(stream)
+        self.assertEqual(verts.shape, (8, 3))
+        self.assertEqual(faces.shape, (13, 3))
 
     def test_save_too_many_colors(self):
         verts = torch.tensor(
@@ -508,6 +518,45 @@ class TestMeshPlyIO(TestCaseMixin, unittest.TestCase):
         self.assertClose(
             pointcloud.features_padded()[0] * 255,
             torch.FloatTensor([3, 4, 5]) + 7 * torch.arange(8)[:, None],
+        )
+
+    def test_load_open3d_mesh(self):
+        # Header based on issue #1104
+        header = "\n".join(
+            [
+                "ply",
+                "format binary_little_endian 1.0",
+                "comment Created by Open3D",
+                "element vertex 3",
+                "property double x",
+                "property double y",
+                "property double z",
+                "property double nx",
+                "property double ny",
+                "property double nz",
+                "property uchar red",
+                "property uchar green",
+                "property uchar blue",
+                "element face 1",
+                "property list uchar uint vertex_indices",
+                "end_header",
+                "",
+            ]
+        ).encode("ascii")
+        vert_data = struct.pack("<" + "ddddddBBB" * 3, *range(9 * 3))
+        face_data = struct.pack("<" + "BIII", 3, 0, 1, 2)
+        io = IO()
+        with NamedTemporaryFile(mode="wb", suffix=".ply") as f:
+            f.write(header)
+            f.write(vert_data)
+            f.write(face_data)
+            f.flush()
+            mesh = io.load_mesh(f.name)
+
+        self.assertClose(mesh.faces_padded(), torch.arange(3)[None, None])
+        self.assertClose(
+            mesh.verts_padded(),
+            (torch.arange(3) + 9.0 * torch.arange(3)[:, None])[None],
         )
 
     def test_save_pointcloud(self):

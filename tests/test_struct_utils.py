@@ -1,4 +1,4 @@
-# Copyright (c) Facebook, Inc. and its affiliates.
+# Copyright (c) Meta Platforms, Inc. and affiliates.
 # All rights reserved.
 #
 # This source code is licensed under the BSD-style license found in the
@@ -8,8 +8,9 @@
 import unittest
 
 import torch
-from common_testing import TestCaseMixin
 from pytorch3d.structures import utils as struct_utils
+
+from .common_testing import TestCaseMixin
 
 
 class TestStructUtils(TestCaseMixin, unittest.TestCase):

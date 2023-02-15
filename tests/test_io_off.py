@@ -1,4 +1,4 @@
-# Copyright (c) Facebook, Inc. and its affiliates.
+# Copyright (c) Meta Platforms, Inc. and affiliates.
 # All rights reserved.
 #
 # This source code is licensed under the BSD-style license found in the
@@ -8,10 +8,11 @@ import unittest
 from tempfile import NamedTemporaryFile
 
 import torch
-from common_testing import TestCaseMixin
 from pytorch3d.io import IO
 from pytorch3d.renderer import TexturesAtlas, TexturesVertex
 from pytorch3d.utils import ico_sphere
+
+from .common_testing import TestCaseMixin
 
 
 CUBE_FACES = [

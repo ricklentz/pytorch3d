@@ -1,4 +1,4 @@
-# Copyright (c) Facebook, Inc. and its affiliates.
+# Copyright (c) Meta Platforms, Inc. and affiliates.
 # All rights reserved.
 #
 # This source code is licensed under the BSD-style license found in the
@@ -7,10 +7,8 @@
 from typing import Tuple
 
 import torch
-from pytorch3d.renderer import RayBundle, ray_bundle_to_ray_points
-
-from .harmonic_embedding import HarmonicEmbedding
-from .linear_with_repeat import LinearWithRepeat
+from pytorch3d.common.linear_with_repeat import LinearWithRepeat
+from pytorch3d.renderer import HarmonicEmbedding, ray_bundle_to_ray_points, RayBundle
 
 
 def _xavier_init(linear):
@@ -28,7 +26,7 @@ class NeuralRadianceField(torch.nn.Module):
         n_hidden_neurons_xyz: int = 256,
         n_hidden_neurons_dir: int = 128,
         n_layers_xyz: int = 8,
-        append_xyz: Tuple[int] = (5,),
+        append_xyz: Tuple[int, ...] = (5,),
         use_multiple_streams: bool = True,
         **kwargs,
     ):
@@ -255,7 +253,7 @@ class MLPWithInputSkips(torch.nn.Module):
         output_dim: int,
         skip_dim: int,
         hidden_dim: int,
-        input_skips: Tuple[int] = (),
+        input_skips: Tuple[int, ...] = (),
     ):
         """
         Args:

@@ -1,4 +1,4 @@
-# Copyright (c) Facebook, Inc. and its affiliates.
+# Copyright (c) Meta Platforms, Inc. and affiliates.
 # All rights reserved.
 #
 # This source code is licensed under the BSD-style license found in the
@@ -9,12 +9,6 @@ import unittest
 
 import numpy as np
 import torch
-from common_testing import (
-    TestCaseMixin,
-    get_pytorch3d_dir,
-    get_random_cuda_device,
-    get_tests_dir,
-)
 from PIL import Image
 from pytorch3d.io import load_objs_as_meshes
 from pytorch3d.ops import sample_points_from_meshes
@@ -29,6 +23,13 @@ from pytorch3d.renderer.points import (
 )
 from pytorch3d.structures import Meshes, Pointclouds
 from pytorch3d.utils.ico_sphere import ico_sphere
+
+from .common_testing import (
+    get_pytorch3d_dir,
+    get_random_cuda_device,
+    get_tests_dir,
+    TestCaseMixin,
+)
 
 
 # If DEBUG=True, save out images generated in the tests for debugging.
@@ -128,7 +129,7 @@ class TestSamplePoints(TestCaseMixin, unittest.TestCase):
 
         # Sphere: points should have radius 1.
         x, y, z = samples[1, :].unbind(1)
-        radius = torch.sqrt(x ** 2 + y ** 2 + z ** 2)
+        radius = torch.sqrt(x**2 + y**2 + z**2)
 
         self.assertClose(radius, torch.ones(num_samples))
 

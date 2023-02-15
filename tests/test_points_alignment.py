@@ -1,4 +1,4 @@
-# Copyright (c) Facebook, Inc. and its affiliates.
+# Copyright (c) Meta Platforms, Inc. and affiliates.
 # All rights reserved.
 #
 # This source code is licensed under the BSD-style license found in the
@@ -8,10 +8,11 @@ import unittest
 
 import numpy as np
 import torch
-from common_testing import TestCaseMixin, get_tests_dir
 from pytorch3d.ops import points_alignment
 from pytorch3d.structures.pointclouds import Pointclouds
 from pytorch3d.transforms import rotation_conversions
+
+from .common_testing import get_tests_dir, TestCaseMixin
 
 
 def _apply_pcl_transformation(X, R, T, s=None):

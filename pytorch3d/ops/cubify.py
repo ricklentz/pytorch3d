@@ -1,4 +1,4 @@
-# Copyright (c) Facebook, Inc. and its affiliates.
+# Copyright (c) Meta Platforms, Inc. and affiliates.
 # All rights reserved.
 #
 # This source code is licensed under the BSD-style license found in the
@@ -7,6 +7,7 @@
 
 import torch
 import torch.nn.functional as F
+from pytorch3d.common.compat import meshgrid_ij
 from pytorch3d.structures import Meshes
 
 
@@ -195,9 +196,7 @@ def cubify(voxels, thresh, device=None, align: str = "topleft") -> Meshes:
     # NF x 3
     grid_faces = torch.stack(grid_faces, dim=1)
 
-    y, x, z = torch.meshgrid(
-        torch.arange(H + 1), torch.arange(W + 1), torch.arange(D + 1)
-    )
+    y, x, z = meshgrid_ij(torch.arange(H + 1), torch.arange(W + 1), torch.arange(D + 1))
     y = y.to(device=device, dtype=torch.float32)
     x = x.to(device=device, dtype=torch.float32)
     z = z.to(device=device, dtype=torch.float32)
@@ -224,7 +223,10 @@ def cubify(voxels, thresh, device=None, align: str = "topleft") -> Meshes:
     grid_faces += nyxz[:, 0].view(-1, 1) * num_verts
     idleverts = torch.ones(num_verts * N, dtype=torch.uint8, device=device)
 
-    idleverts.scatter_(0, grid_faces.flatten(), 0)
+    indices = grid_faces.flatten()
+    if device.type == "cpu":
+        indices = torch.unique(indices)
+    idleverts.scatter_(0, indices, 0)
     grid_faces -= nyxz[:, 0].view(-1, 1) * num_verts
     split_size = torch.bincount(nyxz[:, 0], minlength=N)
     faces_list = list(torch.split(grid_faces, split_size.tolist(), 0))
@@ -233,7 +235,6 @@ def cubify(voxels, thresh, device=None, align: str = "topleft") -> Meshes:
     idlenum = idleverts.cumsum(1)
 
     verts_list = [
-        # pyre-fixme[16]: `Tensor` has no attribute `index_select`.
         grid_verts.index_select(0, (idleverts[n] == 0).nonzero(as_tuple=False)[:, 0])
         for n in range(N)
     ]

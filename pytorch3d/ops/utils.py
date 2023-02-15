@@ -1,10 +1,10 @@
-# Copyright (c) Facebook, Inc. and its affiliates.
+# Copyright (c) Meta Platforms, Inc. and affiliates.
 # All rights reserved.
 #
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
-from typing import TYPE_CHECKING, Optional, Tuple, Union
+from typing import Optional, Tuple, TYPE_CHECKING, Union
 
 import torch
 
@@ -89,6 +89,8 @@ def wmean(
     args = {"dim": dim, "keepdim": keepdim}
 
     if weight is None:
+        # pyre-fixme[6]: For 1st param expected `Optional[dtype]` but got
+        #  `Union[Tuple[int], int]`.
         return x.mean(**args)
 
     if any(
@@ -97,6 +99,8 @@ def wmean(
     ):
         raise ValueError("wmean: weights are not compatible with the tensor")
 
+    # pyre-fixme[6]: For 1st param expected `Optional[dtype]` but got
+    #  `Union[Tuple[int], int]`.
     return (x * weight[..., None]).sum(**args) / weight[..., None].sum(**args).clamp(
         eps
     )
@@ -137,7 +141,11 @@ def convert_pointclouds_to_tensor(pcl: Union[torch.Tensor, "Pointclouds"]):
     elif torch.is_tensor(pcl):
         X = pcl
         num_points = X.shape[1] * torch.ones(  # type: ignore
-            X.shape[0], device=X.device, dtype=torch.int64
+            # pyre-fixme[16]: Item `Pointclouds` of `Union[Pointclouds, Tensor]` has
+            #  no attribute `shape`.
+            X.shape[0],
+            device=X.device,
+            dtype=torch.int64,
         )
     else:
         raise ValueError(
@@ -146,7 +154,7 @@ def convert_pointclouds_to_tensor(pcl: Union[torch.Tensor, "Pointclouds"]):
     return X, num_points
 
 
-def is_pointclouds(pcl: Union[torch.Tensor, "Pointclouds"]):
+def is_pointclouds(pcl: Union[torch.Tensor, "Pointclouds"]) -> bool:
     """Checks whether the input `pcl` is an instance of `Pointclouds`
     by checking the existence of `points_padded` and `num_points_per_cloud`
     functions.

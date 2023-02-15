@@ -1,4 +1,4 @@
-# Copyright (c) Facebook, Inc. and its affiliates.
+# Copyright (c) Meta Platforms, Inc. and affiliates.
 # All rights reserved.
 #
 # This source code is licensed under the BSD-style license found in the
@@ -56,7 +56,6 @@ def interpolate_face_attributes(
     pix_to_face = pix_to_face.view(-1)
     barycentric_coords = barycentric_coords.view(N * H * W * K, 3)
     args = (pix_to_face, barycentric_coords, face_attributes)
-    # pyre-fixme[16]: `_InterpFaceAttrs` has no attribute `apply`.
     out = _InterpFaceAttrs.apply(*args)
     out = out.view(N, H, W, K, -1)
     return out
@@ -94,7 +93,6 @@ def interpolate_face_attributes_python(
     pix_to_face = pix_to_face.clone()
     pix_to_face[mask] = 0
     idx = pix_to_face.view(N * H * W * K, 1, 1).expand(N * H * W * K, 3, D)
-    # pyre-fixme[16]: `Tensor` has no attribute `gather`.
     pixel_face_vals = face_attributes.gather(0, idx).view(N, H, W, K, 3, D)
     pixel_vals = (barycentric_coords[..., None] * pixel_face_vals).sum(dim=-2)
     pixel_vals[mask] = 0  # Replace masked values in output.

@@ -1,4 +1,4 @@
-# Copyright (c) Facebook, Inc. and its affiliates.
+# Copyright (c) Meta Platforms, Inc. and affiliates.
 # All rights reserved.
 #
 # This source code is licensed under the BSD-style license found in the
@@ -8,7 +8,7 @@ import warnings
 from typing import Dict, List, Optional, Tuple
 
 import torch
-from pytorch3d.common.types import Device
+from pytorch3d.common.datatypes import Device
 from pytorch3d.io import load_obj
 from pytorch3d.renderer import (
     FoVPerspectiveCameras,
@@ -113,7 +113,7 @@ class ShapeNetBase(torch.utils.data.Dataset):  # pragma: no cover
         idxs: Optional[List[int]] = None,
         shader_type=HardPhongShader,
         device: Device = "cpu",
-        **kwargs
+        **kwargs,
     ) -> torch.Tensor:
         """
         If a list of model_ids are supplied, render all the objects by the given model_ids.
@@ -227,6 +227,8 @@ class ShapeNetBase(torch.utils.data.Dataset):  # pragma: no cover
                 sampled_idxs = self._sample_idxs_from_category(
                     sample_num=sample_num, category=category
                 )
+                # pyre-fixme[6]: For 1st param expected `Union[List[Tensor],
+                #  typing.Tuple[Tensor, ...]]` but got `Tuple[Tensor, List[int]]`.
                 idxs_tensor = torch.cat((idxs_tensor, sampled_idxs))
             idxs = idxs_tensor.tolist()
         # Check if the indices are valid if idxs are supplied.
@@ -283,4 +285,5 @@ class ShapeNetBase(torch.utils.data.Dataset):  # pragma: no cover
                 "category " + category if category is not None else "all categories",
             )
             warnings.warn(msg)
+        # pyre-fixme[7]: Expected `List[int]` but got `Tensor`.
         return sampled_idxs

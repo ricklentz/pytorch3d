@@ -45,9 +45,11 @@ test:
     - docs
   requires:
     - imageio
+    - hydra-core
+    - accelerate
   commands:
     #pytest .
-    python -m unittest discover -v -s tests
+    python -m unittest discover -v -s tests -t .
 
 
 about:

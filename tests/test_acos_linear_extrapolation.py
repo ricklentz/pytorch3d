@@ -1,4 +1,4 @@
-# Copyright (c) Facebook, Inc. and its affiliates.
+# Copyright (c) Meta Platforms, Inc. and affiliates.
 # All rights reserved.
 #
 # This source code is licensed under the BSD-style license found in the
@@ -9,9 +9,9 @@ import unittest
 
 import numpy as np
 import torch
-from common_testing import TestCaseMixin
-from pytorch3d.common.compat import lstsq
 from pytorch3d.transforms import acos_linear_extrapolation
+
+from .common_testing import TestCaseMixin
 
 
 class TestAcosLinearExtrapolation(TestCaseMixin, unittest.TestCase):
@@ -65,8 +65,8 @@ class TestAcosLinearExtrapolation(TestCaseMixin, unittest.TestCase):
         bound_t = torch.tensor(bound, device=x.device, dtype=x.dtype)
         # fit a line: slope * x + bias = y
         x_1 = torch.stack([x, torch.ones_like(x)], dim=-1)
-        slope, bias = lstsq(x_1, y[:, None]).view(-1)[:2]
-        desired_slope = (-1.0) / torch.sqrt(1.0 - bound_t ** 2)
+        slope, bias = torch.linalg.lstsq(x_1, y[:, None]).solution.view(-1)[:2]
+        desired_slope = (-1.0) / torch.sqrt(1.0 - bound_t**2)
         # test that the desired slope is the same as the fitted one
         self.assertClose(desired_slope.view(1), slope.view(1), atol=1e-2)
         # test that the autograd's slope is the same as the desired one

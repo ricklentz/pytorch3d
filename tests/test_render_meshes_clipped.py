@@ -1,4 +1,4 @@
-# Copyright (c) Facebook, Inc. and its affiliates.
+# Copyright (c) Meta Platforms, Inc. and affiliates.
 # All rights reserved.
 #
 # This source code is licensed under the BSD-style license found in the
@@ -17,19 +17,18 @@ import unittest
 import imageio
 import numpy as np
 import torch
-from common_testing import TestCaseMixin, get_tests_dir, load_rgb_image
 from pytorch3d.io import save_obj
 from pytorch3d.renderer.cameras import (
     FoVPerspectiveCameras,
-    PerspectiveCameras,
     look_at_view_transform,
+    PerspectiveCameras,
 )
 from pytorch3d.renderer.lighting import PointLights
 from pytorch3d.renderer.mesh import (
-    ClipFrustum,
-    TexturesUV,
     clip_faces,
+    ClipFrustum,
     convert_clipped_rasterization_to_original_faces,
+    TexturesUV,
 )
 from pytorch3d.renderer.mesh.rasterize_meshes import _RasterizeFaceVerts
 from pytorch3d.renderer.mesh.rasterizer import MeshRasterizer, RasterizationSettings
@@ -38,6 +37,8 @@ from pytorch3d.renderer.mesh.shader import SoftPhongShader
 from pytorch3d.renderer.mesh.textures import TexturesVertex
 from pytorch3d.structures.meshes import Meshes
 from pytorch3d.utils import torus
+
+from .common_testing import get_tests_dir, load_rgb_image, TestCaseMixin
 
 
 # If DEBUG=True, save out images generated in the tests for debugging.

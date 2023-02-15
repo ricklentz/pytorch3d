@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Copyright (c) Facebook, Inc. and its affiliates.
+# Copyright (c) Meta Platforms, Inc. and affiliates.
 # All rights reserved.
 #
 # This source code is licensed under the BSD-style license found in the
@@ -13,33 +13,61 @@ import os.path
 
 import jinja2
 import yaml
+from packaging import version
 
 
 # The CUDA versions which have pytorch conda packages available for linux for each
 # version of pytorch.
 # Pytorch 1.4 also supports cuda 10.0 but we no longer build for cuda 10.0 at all.
 CONDA_CUDA_VERSIONS = {
-    "1.6.0": ["cu92", "cu101", "cu102"],
-    "1.7.0": ["cu101", "cu102", "cu110"],
-    "1.7.1": ["cu101", "cu102", "cu110"],
-    "1.8.0": ["cu101", "cu102", "cu111"],
-    "1.8.1": ["cu101", "cu102", "cu111"],
     "1.9.0": ["cu102", "cu111"],
     "1.9.1": ["cu102", "cu111"],
+    "1.10.0": ["cu102", "cu111", "cu113"],
+    "1.10.1": ["cu102", "cu111", "cu113"],
+    "1.10.2": ["cu102", "cu111", "cu113"],
+    "1.11.0": ["cu102", "cu111", "cu113", "cu115"],
+    "1.12.0": ["cu102", "cu113", "cu116"],
+    "1.12.1": ["cu102", "cu113", "cu116"],
+    "1.13.0": ["cu116", "cu117"],
+    "1.13.1": ["cu116", "cu117"],
 }
 
 
+def conda_docker_image_for_cuda(cuda_version):
+    if cuda_version in ("cu101", "cu102", "cu111"):
+        return None
+    if cuda_version == "cu113":
+        return "pytorch/conda-builder:cuda113"
+    if cuda_version == "cu115":
+        return "pytorch/conda-builder:cuda115"
+    if cuda_version == "cu116":
+        return "pytorch/conda-builder:cuda116"
+    if cuda_version == "cu117":
+        return "pytorch/conda-builder:cuda117"
+    raise ValueError("Unknown cuda version")
+
+
 def pytorch_versions_for_python(python_version):
-    if python_version in ["3.6", "3.7", "3.8"]:
+    if python_version in ["3.7", "3.8"]:
         return list(CONDA_CUDA_VERSIONS)
-    pytorch_without_py39 = ["1.4", "1.5.0", "1.5.1", "1.6.0", "1.7.0"]
-    return [i for i in CONDA_CUDA_VERSIONS if i not in pytorch_without_py39]
+    if python_version == "3.9":
+        return [
+            i
+            for i in CONDA_CUDA_VERSIONS
+            if version.Version(i) > version.Version("1.7.0")
+        ]
+    if python_version == "3.10":
+        return [
+            i
+            for i in CONDA_CUDA_VERSIONS
+            if version.Version(i) >= version.Version("1.11.0")
+        ]
 
 
 def workflows(prefix="", filter_branch=None, upload=False, indentation=6):
     w = []
     for btype in ["conda"]:
-        for python_version in ["3.6", "3.7", "3.8", "3.9"]:
+        for python_version in ["3.8", "3.9", "3.10"]:
             for pytorch_version in pytorch_versions_for_python(python_version):
                 for cu_version in CONDA_CUDA_VERSIONS[pytorch_version]:
                     w += workflow_pair(
@@ -112,6 +140,10 @@ def generate_base_workflow(
         "pytorch_version": pytorch_version,
         "context": "DOCKERHUB_TOKEN",
     }
+
+    conda_docker_image = conda_docker_image_for_cuda(cu_version)
+    if conda_docker_image is not None:
+        d["conda_docker_image"] = conda_docker_image
 
     if filter_branch is not None:
         d["filters"] = {"branches": {"only": filter_branch}}

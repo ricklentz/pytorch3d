@@ -1,4 +1,4 @@
-# Copyright (c) Facebook, Inc. and its affiliates.
+# Copyright (c) Meta Platforms, Inc. and affiliates.
 # All rights reserved.
 #
 # This source code is licensed under the BSD-style license found in the
@@ -12,12 +12,7 @@ from os import path
 
 import torch
 
-
-# fmt: off
-# Make the mixin available.
-sys.path.insert(0, path.join(path.dirname(__file__), ".."))
-from common_testing import TestCaseMixin  # isort:skip  # noqa: E402
-# fmt: on
+from ..common_testing import TestCaseMixin
 
 
 # Making sure you can run this, even if pulsar hasn't been installed yet.

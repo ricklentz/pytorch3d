@@ -1,4 +1,4 @@
-# Copyright (c) Facebook, Inc. and its affiliates.
+# Copyright (c) Meta Platforms, Inc. and affiliates.
 # All rights reserved.
 #
 # This source code is licensed under the BSD-style license found in the
@@ -7,28 +7,20 @@
 import contextlib
 import pathlib
 import warnings
-from typing import IO, ContextManager, Optional, Union
+from typing import cast, ContextManager, IO, Optional, Union
 
 import numpy as np
 import torch
 from iopath.common.file_io import PathManager
 from PIL import Image
 
-from ..common.types import Device
-
-
-@contextlib.contextmanager
-def nullcontext(x):
-    """
-    This is just like contextlib.nullcontext but also works in Python 3.6.
-    """
-    yield x
+from ..common.datatypes import Device
 
 
 PathOrStr = Union[pathlib.Path, str]
 
 
-def _open_file(f, path_manager: PathManager, mode="r") -> ContextManager[IO]:
+def _open_file(f, path_manager: PathManager, mode: str = "r") -> ContextManager[IO]:
     if isinstance(f, str):
         f = path_manager.open(f, mode)
         return contextlib.closing(f)
@@ -36,7 +28,7 @@ def _open_file(f, path_manager: PathManager, mode="r") -> ContextManager[IO]:
         f = f.open(mode)
         return contextlib.closing(f)
     else:
-        return nullcontext(f)
+        return contextlib.nullcontext(cast(IO, f))
 
 
 def _make_tensor(
@@ -58,7 +50,6 @@ def _check_faces_indices(
     if pad_value is None:
         mask = torch.ones(faces_indices.shape[:-1]).bool()  # Keep all faces
     else:
-        # pyre-fixme[16]: `torch.ByteTensor` has no attribute `any`
         mask = faces_indices.ne(pad_value).any(dim=-1)
     if torch.any(faces_indices[mask] >= max_index) or torch.any(
         faces_indices[mask] < 0

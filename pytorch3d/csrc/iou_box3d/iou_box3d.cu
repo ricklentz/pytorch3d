@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  * All rights reserved.
  *
  * This source code is licensed under the BSD-style license found in the
@@ -15,7 +15,6 @@
 #include <thrust/device_vector.h>
 #include <thrust/tuple.h>
 #include "iou_box3d/iou_utils.cuh"
-#include "utils/pytorch3d_cutils.h"
 
 // Parallelize over N*M computations which can each be done
 // independently
@@ -30,14 +29,17 @@ __global__ void IoUBox3DKernel(
   const size_t tid = blockIdx.x * blockDim.x + threadIdx.x;
   const size_t stride = gridDim.x * blockDim.x;
 
+  FaceVerts box1_tris[NUM_TRIS];
+  FaceVerts box2_tris[NUM_TRIS];
+  FaceVerts box1_planes[NUM_PLANES];
+  FaceVerts box2_planes[NUM_PLANES];
+
   for (size_t i = tid; i < N * M; i += stride) {
     const size_t n = i / M; // box1 index
     const size_t m = i % M; // box2 index
 
     // Convert to array of structs of face vertices i.e. effectively (F, 3, 3)
     // FaceVerts is a data type defined in iou_utils.cuh
-    FaceVerts box1_tris[NUM_TRIS];
-    FaceVerts box2_tris[NUM_TRIS];
     GetBoxTris(boxes1[n], box1_tris);
     GetBoxTris(boxes2[m], box2_tris);
 
@@ -47,9 +49,7 @@ __global__ void IoUBox3DKernel(
     const float3 box2_center = BoxCenter(boxes2[m]);
 
     // Convert to an array of face vertices
-    FaceVerts box1_planes[NUM_PLANES];
     GetBoxPlanes(boxes1[n], box1_planes);
-    FaceVerts box2_planes[NUM_PLANES];
     GetBoxPlanes(boxes2[m], box2_planes);
 
     // Get Box Volumes
@@ -89,8 +89,9 @@ __global__ void IoUBox3DKernel(
       for (int b1 = 0; b1 < box1_count; ++b1) {
         for (int b2 = 0; b2 < box2_count; ++b2) {
           const bool is_coplanar =
-              IsCoplanarFace(box1_intersect[b1], box2_intersect[b2]);
-          if (is_coplanar) {
+              IsCoplanarTriTri(box1_intersect[b1], box2_intersect[b2]);
+          const float area = FaceArea(box1_intersect[b1]);
+          if ((is_coplanar) && (area > aEpsilon)) {
             tri2_keep[b2].keep = false;
           }
         }

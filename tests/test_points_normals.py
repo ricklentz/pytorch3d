@@ -1,4 +1,4 @@
-# Copyright (c) Facebook, Inc. and its affiliates.
+# Copyright (c) Meta Platforms, Inc. and affiliates.
 # All rights reserved.
 #
 # This source code is licensed under the BSD-style license found in the
@@ -8,12 +8,13 @@ import unittest
 from typing import Tuple, Union
 
 import torch
-from common_testing import TestCaseMixin
 from pytorch3d.ops import (
     estimate_pointcloud_local_coord_frames,
     estimate_pointcloud_normals,
 )
 from pytorch3d.structures.pointclouds import Pointclouds
+
+from .common_testing import TestCaseMixin
 
 
 DEBUG = False

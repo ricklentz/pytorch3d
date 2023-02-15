@@ -1,12 +1,13 @@
-# Copyright (c) Facebook, Inc. and its affiliates.
+# Copyright (c) Meta Platforms, Inc. and affiliates.
 # All rights reserved.
 #
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
-from typing import TYPE_CHECKING, Tuple, Union
+from typing import Tuple, TYPE_CHECKING, Union
 
 import torch
+from pytorch3d.common.workaround import symeig3x3
 
 from .utils import convert_pointclouds_to_tensor, get_point_covariances
 
@@ -19,6 +20,8 @@ def estimate_pointcloud_normals(
     pointclouds: Union[torch.Tensor, "Pointclouds"],
     neighborhood_size: int = 50,
     disambiguate_directions: bool = True,
+    *,
+    use_symeig_workaround: bool = True,
 ) -> torch.Tensor:
     """
     Estimates the normals of a batch of `pointclouds`.
@@ -33,6 +36,8 @@ def estimate_pointcloud_normals(
         geometry around each point.
       **disambiguate_directions**: If `True`, uses the algorithm from [1] to
         ensure sign consistency of the normals of neighboring points.
+      **use_symeig_workaround**: If `True`, uses a custom eigenvalue
+        calculation.
 
     Returns:
       **normals**: A tensor of normals for each input point
@@ -48,6 +53,7 @@ def estimate_pointcloud_normals(
         pointclouds,
         neighborhood_size=neighborhood_size,
         disambiguate_directions=disambiguate_directions,
+        use_symeig_workaround=use_symeig_workaround,
     )
 
     # the normals correspond to the first vector of each local coord frame
@@ -60,6 +66,8 @@ def estimate_pointcloud_local_coord_frames(
     pointclouds: Union[torch.Tensor, "Pointclouds"],
     neighborhood_size: int = 50,
     disambiguate_directions: bool = True,
+    *,
+    use_symeig_workaround: bool = True,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     """
     Estimates the principal directions of curvature (which includes normals)
@@ -88,6 +96,8 @@ def estimate_pointcloud_local_coord_frames(
         geometry around each point.
       **disambiguate_directions**: If `True`, uses the algorithm from [1] to
         ensure sign consistency of the normals of neighboring points.
+      **use_symeig_workaround**: If `True`, uses a custom eigenvalue
+        calculation.
 
     Returns:
       **curvatures**: The three principal curvatures of each point
@@ -129,11 +139,14 @@ def estimate_pointcloud_local_coord_frames(
 
     # get the local coord frames as principal directions of
     # the per-point covariance
-    # this is done with torch.symeig, which returns the
+    # this is done with torch.symeig / torch.linalg.eigh, which returns the
     # eigenvectors (=principal directions) in an ascending order of their
-    # corresponding eigenvalues, while the smallest eigenvalue's eigenvector
-    # corresponds to the normal direction
-    curvatures, local_coord_frames = torch.symeig(cov, eigenvectors=True)
+    # corresponding eigenvalues, and the smallest eigenvalue's eigenvector
+    # corresponds to the normal direction; or with a custom equivalent.
+    if use_symeig_workaround:
+        curvatures, local_coord_frames = symeig3x3(cov, eigenvectors=True)
+    else:
+        curvatures, local_coord_frames = torch.linalg.eigh(cov)
 
     # disambiguate the directions of individual principal vectors
     if disambiguate_directions:
@@ -153,7 +166,7 @@ def estimate_pointcloud_local_coord_frames(
     return curvatures, local_coord_frames
 
 
-def _disambiguate_vector_directions(pcl, knns, vecs):
+def _disambiguate_vector_directions(pcl, knns, vecs: torch.Tensor) -> torch.Tensor:
     """
     Disambiguates normal directions according to [1].
 

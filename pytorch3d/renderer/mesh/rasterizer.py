@@ -1,24 +1,72 @@
-# Copyright (c) Facebook, Inc. and its affiliates.
+# Copyright (c) Meta Platforms, Inc. and affiliates.
 # All rights reserved.
 #
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
 from dataclasses import dataclass
-from typing import NamedTuple, Optional, Tuple, Union
+from typing import Optional, Tuple, Union
 
 import torch
 import torch.nn as nn
+from pytorch3d.renderer.cameras import try_get_projection_transform
 
 from .rasterize_meshes import rasterize_meshes
 
 
-# Class to store the outputs of mesh rasterization
-class Fragments(NamedTuple):
+@dataclass(frozen=True)
+class Fragments:
+    """
+    A dataclass representing the outputs of a rasterizer. Can be detached from the
+    computational graph in order to stop the gradients from flowing through the
+    rasterizer.
+
+    Members:
+        pix_to_face:
+            LongTensor of shape (N, image_size, image_size, faces_per_pixel) giving
+            the indices of the nearest faces at each pixel, sorted in ascending
+            z-order. Concretely ``pix_to_face[n, y, x, k] = f`` means that
+            ``faces_verts[f]`` is the kth closest face (in the z-direction) to pixel
+            (y, x). Pixels that are hit by fewer than faces_per_pixel are padded with
+            -1.
+
+        zbuf:
+            FloatTensor of shape (N, image_size, image_size, faces_per_pixel) giving
+            the NDC z-coordinates of the nearest faces at each pixel, sorted in
+            ascending z-order. Concretely, if ``pix_to_face[n, y, x, k] = f`` then
+            ``zbuf[n, y, x, k] = face_verts[f, 2]``. Pixels hit by fewer than
+            faces_per_pixel are padded with -1.
+
+        bary_coords:
+            FloatTensor of shape (N, image_size, image_size, faces_per_pixel, 3)
+            giving the barycentric coordinates in NDC units of the nearest faces at
+            each pixel, sorted in ascending z-order. Concretely, if ``pix_to_face[n,
+            y, x, k] = f`` then ``[w0, w1, w2] = barycentric[n, y, x, k]`` gives the
+            barycentric coords for pixel (y, x) relative to the face defined by
+            ``face_verts[f]``. Pixels hit by fewer than faces_per_pixel are padded
+            with -1.
+
+        dists:
+            FloatTensor of shape (N, image_size, image_size, faces_per_pixel) giving
+            the signed Euclidean distance (in NDC units) in the x/y plane of each
+            point closest to the pixel. Concretely if ``pix_to_face[n, y, x, k] = f``
+            then ``pix_dists[n, y, x, k]`` is the squared distance between the pixel
+            (y, x) and the face given by vertices ``face_verts[f]``. Pixels hit with
+            fewer than ``faces_per_pixel`` are padded with -1.
+    """
+
     pix_to_face: torch.Tensor
     zbuf: torch.Tensor
     bary_coords: torch.Tensor
-    dists: torch.Tensor
+    dists: Optional[torch.Tensor]
+
+    def detach(self) -> "Fragments":
+        return Fragments(
+            pix_to_face=self.pix_to_face,
+            zbuf=self.zbuf.detach(),
+            bary_coords=self.bary_coords.detach(),
+            dists=self.dists.detach() if self.dists is not None else self.dists,
+        )
 
 
 @dataclass
@@ -38,6 +86,8 @@ class RasterizationSettings:
             bin_size=0 uses naive rasterization; setting bin_size=None attempts
             to set it heuristically based on the shape of the input. This should
             not affect the output, but can affect the speed of the forward pass.
+        max_faces_opengl: Max number of faces in any mesh we will rasterize. Used only by
+            MeshRasterizerOpenGL to pre-allocate OpenGL memory.
         max_faces_per_bin: Only applicable when using coarse-to-fine
             rasterization (bin_size != 0); this is the maximum number of faces
             allowed within each bin. This should not affect the output values,
@@ -75,6 +125,7 @@ class RasterizationSettings:
     blur_radius: float = 0.0
     faces_per_pixel: int = 1
     bin_size: Optional[int] = None
+    max_faces_opengl: int = 10_000_000
     max_faces_per_bin: Optional[int] = None
     perspective_correct: Optional[bool] = None
     clip_barycentric_coords: Optional[bool] = None
@@ -110,7 +161,8 @@ class MeshRasterizer(nn.Module):
 
     def to(self, device):
         # Manually move to device cameras as it is not a subclass of nn.Module
-        self.cameras = self.cameras.to(device)
+        if self.cameras is not None:
+            self.cameras = self.cameras.to(device)
         return self
 
     def transform(self, meshes_world, **kwargs) -> torch.Tensor:
@@ -146,12 +198,16 @@ class MeshRasterizer(nn.Module):
         verts_view = cameras.get_world_to_view_transform(**kwargs).transform_points(
             verts_world, eps=eps
         )
-        # view to NDC transform
         to_ndc_transform = cameras.get_ndc_camera_transform(**kwargs)
-        projection_transform = cameras.get_projection_transform(**kwargs).compose(
-            to_ndc_transform
-        )
-        verts_ndc = projection_transform.transform_points(verts_view, eps=eps)
+        projection_transform = try_get_projection_transform(cameras, kwargs)
+        if projection_transform is not None:
+            projection_transform = projection_transform.compose(to_ndc_transform)
+            verts_ndc = projection_transform.transform_points(verts_view, eps=eps)
+        else:
+            # Call transform_points instead of explicitly composing transforms to handle
+            # the case, where camera class does not have a projection matrix form.
+            verts_proj = cameras.transform_points(verts_world, eps=eps)
+            verts_ndc = to_ndc_transform.transform_points(verts_proj, eps=eps)
 
         verts_ndc[..., 2] = verts_view[..., 2]
         meshes_ndc = meshes_world.update_padded(new_verts_padded=verts_ndc)
@@ -189,6 +245,10 @@ class MeshRasterizer(nn.Module):
                 znear = znear.min().item()
             z_clip = None if not perspective_correct or znear is None else znear / 2
 
+        # By default, turn on clip_barycentric_coords if blur_radius > 0.
+        # When blur_radius > 0, a face can be matched to a pixel that is outside the
+        # face, resulting in negative barycentric coordinates.
+
         pix_to_face, zbuf, bary_coords, dists = rasterize_meshes(
             meshes_proj,
             image_size=raster_settings.image_size,
@@ -202,6 +262,10 @@ class MeshRasterizer(nn.Module):
             z_clip_value=z_clip,
             cull_to_frustum=raster_settings.cull_to_frustum,
         )
+
         return Fragments(
-            pix_to_face=pix_to_face, zbuf=zbuf, bary_coords=bary_coords, dists=dists
+            pix_to_face=pix_to_face,
+            zbuf=zbuf,
+            bary_coords=bary_coords,
+            dists=dists,
         )

@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  * All rights reserved.
  *
  * This source code is licensed under the BSD-style license found in the
@@ -72,6 +72,20 @@ class HomeSplash extends React.Component {
       </SplashContainer>
     );
   }
+}
+
+function SocialBanner() {
+  return (
+    <div className="socialBanner">
+      <div>
+        Support Ukraine 🇺🇦{' '}
+        <a href="https://opensource.fb.com/support-ukraine">
+          Help Provide Humanitarian Aid to Ukraine
+        </a>
+        .
+      </div>
+    </div>
+  );
 }
 
 class Index extends React.Component {
@@ -212,6 +226,7 @@ loss_chamfer, _ = chamfer_distance(sample_sphere, sample_test)
 
     return (
       <div>
+        <SocialBanner />
         <HomeSplash siteConfig={siteConfig} language={language} />
         <div className="landingPage mainContainer">
           <Features />

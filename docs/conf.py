@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-# Copyright (c) Facebook, Inc. and its affiliates.
+# Copyright (c) Meta Platforms, Inc. and affiliates.
 # All rights reserved.
 #
 # This source code is licensed under the BSD-style license found in the
@@ -82,7 +82,7 @@ for m in ["cv2", "scipy", "numpy", "pytorch3d._C", "np.eye", "np.zeros"]:
 # -- Project information -----------------------------------------------------
 
 project = "PyTorch3D"
-copyright = "Facebook Research"
+copyright = "Meta Platforms, Inc"
 author = "facebookresearch"
 
 # The short X.Y version

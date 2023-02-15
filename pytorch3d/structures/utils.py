@@ -1,4 +1,4 @@
-# Copyright (c) Facebook, Inc. and its affiliates.
+# Copyright (c) Meta Platforms, Inc. and affiliates.
 # All rights reserved.
 #
 # This source code is licensed under the BSD-style license found in the
@@ -210,7 +210,6 @@ def padded_to_packed(
 
     # Convert to packed using pad value
     if pad_value is not None:
-        # pyre-fixme[16]: `ByteTensor` has no attribute `any`.
         mask = x_packed.ne(pad_value).any(-1)
         x_packed = x_packed[mask]
         return x_packed

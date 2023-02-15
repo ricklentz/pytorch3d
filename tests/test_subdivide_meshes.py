@@ -1,4 +1,4 @@
-# Copyright (c) Facebook, Inc. and its affiliates.
+# Copyright (c) Meta Platforms, Inc. and affiliates.
 # All rights reserved.
 #
 # This source code is licensed under the BSD-style license found in the
@@ -8,10 +8,11 @@
 import unittest
 
 import torch
-from common_testing import TestCaseMixin
 from pytorch3d.ops.subdivide_meshes import SubdivideMeshes
 from pytorch3d.structures.meshes import Meshes
 from pytorch3d.utils.ico_sphere import ico_sphere
+
+from .common_testing import TestCaseMixin
 
 
 class TestSubdivideMeshes(TestCaseMixin, unittest.TestCase):

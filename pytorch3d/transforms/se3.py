@@ -1,11 +1,10 @@
-# Copyright (c) Facebook, Inc. and its affiliates.
+# Copyright (c) Meta Platforms, Inc. and affiliates.
 # All rights reserved.
 #
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
 import torch
-from pytorch3d.common.compat import solve
 
 from .so3 import _so3_exp_map, hat, so3_log_map
 
@@ -174,7 +173,7 @@ def se3_log_map(
     # log_translation is V^-1 @ T
     T = transform[:, 3, :3]
     V = _se3_V_matrix(*_get_se3_V_input(log_rotation), eps=eps)
-    log_translation = solve(V, T[:, :, None])[:, :, 0]
+    log_translation = torch.linalg.solve(V, T[:, :, None])[:, :, 0]
 
     return torch.cat((log_translation, log_rotation), dim=1)
 
@@ -194,10 +193,13 @@ def _se3_V_matrix(
     V = (
         torch.eye(3, dtype=log_rotation.dtype, device=log_rotation.device)[None]
         + log_rotation_hat
-        * ((1 - torch.cos(rotation_angles)) / (rotation_angles ** 2))[:, None, None]
+        # pyre-fixme[58]: `**` is not supported for operand types `Tensor` and `int`.
+        * ((1 - torch.cos(rotation_angles)) / (rotation_angles**2))[:, None, None]
         + (
             log_rotation_hat_square
-            * ((rotation_angles - torch.sin(rotation_angles)) / (rotation_angles ** 3))[
+            # pyre-fixme[58]: `**` is not supported for operand types `Tensor` and
+            #  `int`.
+            * ((rotation_angles - torch.sin(rotation_angles)) / (rotation_angles**3))[
                 :, None, None
             ]
         )
@@ -211,7 +213,8 @@ def _get_se3_V_input(log_rotation: torch.Tensor, eps: float = 1e-4):
     A helper function that computes the input variables to the `_se3_V_matrix`
     function.
     """
-    nrms = (log_rotation ** 2).sum(-1)
+    # pyre-fixme[58]: `**` is not supported for operand types `Tensor` and `int`.
+    nrms = (log_rotation**2).sum(-1)
     rotation_angles = torch.clamp(nrms, eps).sqrt()
     log_rotation_hat = hat(log_rotation)
     log_rotation_hat_square = torch.bmm(log_rotation_hat, log_rotation_hat)

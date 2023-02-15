@@ -1,13 +1,15 @@
-# Copyright (c) Facebook, Inc. and its affiliates.
+# Copyright (c) Meta Platforms, Inc. and affiliates.
 # All rights reserved.
 #
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
+from typing import Tuple
 
 import torch
 import torch.nn as nn
 
+from ...structures.meshes import Meshes
 
 # A renderer class should be initialized with a
 # function for rasterization and a function for shading.
@@ -28,8 +30,8 @@ import torch.nn as nn
 class MeshRenderer(nn.Module):
     """
     A class for rendering a batch of heterogeneous meshes. The class should
-    be initialized with a rasterizer and shader class which each have a forward
-    function.
+    be initialized with a rasterizer (a MeshRasterizer or a MeshRasterizerOpenGL)
+    and shader class which each have a forward function.
     """
 
     def __init__(self, rasterizer, shader) -> None:
@@ -43,7 +45,7 @@ class MeshRenderer(nn.Module):
         self.shader.to(device)
         return self
 
-    def forward(self, meshes_world, **kwargs) -> torch.Tensor:
+    def forward(self, meshes_world: Meshes, **kwargs) -> torch.Tensor:
         """
         Render a batch of images from a batch of meshes by rasterizing and then
         shading.
@@ -65,8 +67,8 @@ class MeshRenderer(nn.Module):
 class MeshRendererWithFragments(nn.Module):
     """
     A class for rendering a batch of heterogeneous meshes. The class should
-    be initialized with a rasterizer and shader class which each have a forward
-    function.
+    be initialized with a rasterizer (a MeshRasterizer or a MeshRasterizerOpenGL)
+    and shader class which each have a forward function.
 
     In the forward pass this class returns the `fragments` from which intermediate
     values such as the depth map can be easily extracted e.g.
@@ -85,8 +87,11 @@ class MeshRendererWithFragments(nn.Module):
         # Rasterizer and shader have submodules which are not of type nn.Module
         self.rasterizer.to(device)
         self.shader.to(device)
+        return self
 
-    def forward(self, meshes_world, **kwargs):
+    def forward(
+        self, meshes_world: Meshes, **kwargs
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Render a batch of images from a batch of meshes by rasterizing and then
         shading.

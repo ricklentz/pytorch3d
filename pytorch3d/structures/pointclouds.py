@@ -1,16 +1,16 @@
-# Copyright (c) Facebook, Inc. and its affiliates.
+# Copyright (c) Meta Platforms, Inc. and affiliates.
 # All rights reserved.
 #
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
 from itertools import zip_longest
-from typing import Sequence, Union
+from typing import List, Optional, Sequence, Tuple, Union
 
 import numpy as np
 import torch
 
-from ..common.types import Device, make_device
+from ..common.datatypes import Device, make_device
 from . import utils as struct_utils
 
 
@@ -185,7 +185,6 @@ class Pointclouds:
             self._points_list = points
             self._N = len(self._points_list)
             self.valid = torch.zeros((self._N,), dtype=torch.bool, device=self.device)
-            self._num_points_per_cloud = []
 
             if self._N > 0:
                 self.device = self._points_list[0].device
@@ -208,6 +207,8 @@ class Pointclouds:
                 if len(num_points_per_cloud.unique()) == 1:
                     self.equisized = True
                 self._num_points_per_cloud = num_points_per_cloud
+            else:
+                self._num_points_per_cloud = torch.tensor([], dtype=torch.int64)
 
         elif torch.is_tensor(points):
             if points.dim() != 3 or points.shape[2] != 3:
@@ -240,7 +241,9 @@ class Pointclouds:
         if features_C is not None:
             self._C = features_C
 
-    def _parse_auxiliary_input(self, aux_input):
+    def _parse_auxiliary_input(
+        self, aux_input
+    ) -> Tuple[Optional[List[torch.Tensor]], Optional[torch.Tensor], Optional[int]]:
         """
         Interpret the auxiliary inputs (normals, features) given to __init__.
 
@@ -264,30 +267,8 @@ class Pointclouds:
         aux_input_C = None
 
         if isinstance(aux_input, list):
-            if len(aux_input) != self._N:
-                raise ValueError("Points and auxiliary input must be the same length.")
-            for p, d in zip(self._num_points_per_cloud, aux_input):
-                if p != d.shape[0]:
-                    raise ValueError(
-                        "A cloud has mismatched numbers of points and inputs"
-                    )
-                if d.device != self.device:
-                    raise ValueError(
-                        "All auxiliary inputs must be on the same device as the points."
-                    )
-                if p > 0:
-                    if d.dim() != 2:
-                        raise ValueError(
-                            "A cloud auxiliary input must be of shape PxC or empty"
-                        )
-                    if aux_input_C is None:
-                        aux_input_C = d.shape[1]
-                    if aux_input_C != d.shape[1]:
-                        raise ValueError(
-                            "The clouds must have the same number of channels"
-                        )
-            return aux_input, None, aux_input_C
-        elif torch.is_tensor(aux_input):
+            return self._parse_auxiliary_input_list(aux_input)
+        if torch.is_tensor(aux_input):
             if aux_input.dim() != 3:
                 raise ValueError("Auxiliary input tensor has incorrect dimensions.")
             if self._N != aux_input.shape[0]:
@@ -310,10 +291,79 @@ class Pointclouds:
                     points in a cloud."
             )
 
+    def _parse_auxiliary_input_list(
+        self, aux_input: list
+    ) -> Tuple[Optional[List[torch.Tensor]], None, Optional[int]]:
+        """
+        Interpret the auxiliary inputs (normals, features) given to __init__,
+        if a list.
+
+        Args:
+            aux_input:
+                - List where each element is a tensor of shape (num_points, C)
+                  containing the features for the points in the cloud.
+              For normals, C = 3
+
+        Returns:
+            3-element tuple of list, padded=None, num_channels.
+            If aux_input is list, then padded is None. If aux_input is a tensor,
+            then list is None.
+        """
+        aux_input_C = None
+        good_empty = None
+        needs_fixing = False
+
+        if len(aux_input) != self._N:
+            raise ValueError("Points and auxiliary input must be the same length.")
+        for p, d in zip(self._num_points_per_cloud, aux_input):
+            valid_but_empty = p == 0 and d is not None and d.ndim == 2
+            if p > 0 or valid_but_empty:
+                if p != d.shape[0]:
+                    raise ValueError(
+                        "A cloud has mismatched numbers of points and inputs"
+                    )
+                if d.dim() != 2:
+                    raise ValueError(
+                        "A cloud auxiliary input must be of shape PxC or empty"
+                    )
+                if aux_input_C is None:
+                    aux_input_C = d.shape[1]
+                elif aux_input_C != d.shape[1]:
+                    raise ValueError("The clouds must have the same number of channels")
+                if d.device != self.device:
+                    raise ValueError(
+                        "All auxiliary inputs must be on the same device as the points."
+                    )
+            else:
+                needs_fixing = True
+
+        if aux_input_C is None:
+            # We found nothing useful
+            return None, None, None
+
+        # If we have empty but "wrong" inputs we want to store "fixed" versions.
+        if needs_fixing:
+            if good_empty is None:
+                good_empty = torch.zeros((0, aux_input_C), device=self.device)
+            aux_input_out = []
+            for p, d in zip(self._num_points_per_cloud, aux_input):
+                valid_but_empty = p == 0 and d is not None and d.ndim == 2
+                if p > 0 or valid_but_empty:
+                    aux_input_out.append(d)
+                else:
+                    aux_input_out.append(good_empty)
+        else:
+            aux_input_out = aux_input
+
+        return aux_input_out, None, aux_input_C
+
     def __len__(self) -> int:
         return self._N
 
-    def __getitem__(self, index) -> "Pointclouds":
+    def __getitem__(
+        self,
+        index: Union[int, List[int], slice, torch.BoolTensor, torch.LongTensor],
+    ) -> "Pointclouds":
         """
         Args:
             index: Specifying the index of the cloud to retrieve.
@@ -323,38 +373,40 @@ class Pointclouds:
             Pointclouds object with selected clouds. The tensors are not cloned.
         """
         normals, features = None, None
+        normals_list = self.normals_list()
+        features_list = self.features_list()
         if isinstance(index, int):
             points = [self.points_list()[index]]
-            if self.normals_list() is not None:
-                normals = [self.normals_list()[index]]
-            if self.features_list() is not None:
-                features = [self.features_list()[index]]
+            if normals_list is not None:
+                normals = [normals_list[index]]
+            if features_list is not None:
+                features = [features_list[index]]
         elif isinstance(index, slice):
             points = self.points_list()[index]
-            if self.normals_list() is not None:
-                normals = self.normals_list()[index]
-            if self.features_list() is not None:
-                features = self.features_list()[index]
+            if normals_list is not None:
+                normals = normals_list[index]
+            if features_list is not None:
+                features = features_list[index]
         elif isinstance(index, list):
             points = [self.points_list()[i] for i in index]
-            if self.normals_list() is not None:
-                normals = [self.normals_list()[i] for i in index]
-            if self.features_list() is not None:
-                features = [self.features_list()[i] for i in index]
+            if normals_list is not None:
+                normals = [normals_list[i] for i in index]
+            if features_list is not None:
+                features = [features_list[i] for i in index]
         elif isinstance(index, torch.Tensor):
             if index.dim() != 1 or index.dtype.is_floating_point:
                 raise IndexError(index)
             # NOTE consider converting index to cpu for efficiency
             if index.dtype == torch.bool:
                 # advanced indexing on a single dimension
-                index = index.nonzero()  # pyre-ignore
+                index = index.nonzero()
                 index = index.squeeze(1) if index.numel() > 0 else index
                 index = index.tolist()
             points = [self.points_list()[i] for i in index]
-            if self.normals_list() is not None:
-                normals = [self.normals_list()[i] for i in index]
-            if self.features_list() is not None:
-                features = [self.features_list()[i] for i in index]
+            if normals_list is not None:
+                normals = [normals_list[i] for i in index]
+            if features_list is not None:
+                features = [features_list[i] for i in index]
         else:
             raise IndexError(index)
 
@@ -369,7 +421,7 @@ class Pointclouds:
         """
         return self._N == 0 or self.valid.eq(False).all()
 
-    def points_list(self):
+    def points_list(self) -> List[torch.Tensor]:
         """
         Get the list representation of the points.
 
@@ -388,9 +440,10 @@ class Pointclouds:
             self._points_list = points_list
         return self._points_list
 
-    def normals_list(self):
+    def normals_list(self) -> Optional[List[torch.Tensor]]:
         """
-        Get the list representation of the normals.
+        Get the list representation of the normals,
+        or None if there are no normals.
 
         Returns:
             list of tensors of normals of shape (P_n, 3).
@@ -404,9 +457,10 @@ class Pointclouds:
             )
         return self._normals_list
 
-    def features_list(self):
+    def features_list(self) -> Optional[List[torch.Tensor]]:
         """
-        Get the list representation of the features.
+        Get the list representation of the features,
+        or None if there are no features.
 
         Returns:
             list of tensors of features of shape (P_n, C).
@@ -420,7 +474,7 @@ class Pointclouds:
             )
         return self._features_list
 
-    def points_packed(self):
+    def points_packed(self) -> torch.Tensor:
         """
         Get the packed representation of the points.
 
@@ -430,22 +484,24 @@ class Pointclouds:
         self._compute_packed()
         return self._points_packed
 
-    def normals_packed(self):
+    def normals_packed(self) -> Optional[torch.Tensor]:
         """
         Get the packed representation of the normals.
 
         Returns:
-            tensor of normals of shape (sum(P_n), 3).
+            tensor of normals of shape (sum(P_n), 3),
+            or None if there are no normals.
         """
         self._compute_packed()
         return self._normals_packed
 
-    def features_packed(self):
+    def features_packed(self) -> Optional[torch.Tensor]:
         """
         Get the packed representation of the features.
 
         Returns:
-            tensor of features of shape (sum(P_n), C).
+            tensor of features of shape (sum(P_n), C),
+            or None if there are no features
         """
         self._compute_packed()
         return self._features_packed
@@ -473,7 +529,7 @@ class Pointclouds:
         self._compute_packed()
         return self._cloud_to_packed_first_idx
 
-    def num_points_per_cloud(self):
+    def num_points_per_cloud(self) -> torch.Tensor:
         """
         Return a 1D tensor x with length equal to the number of clouds giving
         the number of points in each cloud.
@@ -483,7 +539,7 @@ class Pointclouds:
         """
         return self._num_points_per_cloud
 
-    def points_padded(self):
+    def points_padded(self) -> torch.Tensor:
         """
         Get the padded representation of the points.
 
@@ -493,9 +549,10 @@ class Pointclouds:
         self._compute_padded()
         return self._points_padded
 
-    def normals_padded(self):
+    def normals_padded(self) -> Optional[torch.Tensor]:
         """
-        Get the padded representation of the normals.
+        Get the padded representation of the normals,
+        or None if there are no normals.
 
         Returns:
             tensor of normals of shape (N, max(P_n), 3).
@@ -503,9 +560,10 @@ class Pointclouds:
         self._compute_padded()
         return self._normals_padded
 
-    def features_padded(self):
+    def features_padded(self) -> Optional[torch.Tensor]:
         """
-        Get the padded representation of the features.
+        Get the padded representation of the features,
+        or None if there are no features.
 
         Returns:
             tensor of features of shape (N, max(P_n), 3).
@@ -562,16 +620,18 @@ class Pointclouds:
                 pad_value=0.0,
                 equisized=self.equisized,
             )
-            if self.normals_list() is not None:
+            normals_list = self.normals_list()
+            if normals_list is not None:
                 self._normals_padded = struct_utils.list_to_padded(
-                    self.normals_list(),
+                    normals_list,
                     (self._P, 3),
                     pad_value=0.0,
                     equisized=self.equisized,
                 )
-            if self.features_list() is not None:
+            features_list = self.features_list()
+            if features_list is not None:
                 self._features_padded = struct_utils.list_to_padded(
-                    self.features_list(),
+                    features_list,
                     (self._P, self._C),
                     pad_value=0.0,
                     equisized=self.equisized,
@@ -772,10 +832,12 @@ class Pointclouds:
             )
         points = self.points_list()[index]
         normals, features = None, None
-        if self.normals_list() is not None:
-            normals = self.normals_list()[index]
-        if self.features_list() is not None:
-            features = self.features_list()[index]
+        normals_list = self.normals_list()
+        if normals_list is not None:
+            normals = normals_list[index]
+        features_list = self.features_list()
+        if features_list is not None:
+            features = features_list[index]
         return points, normals, features
 
     # TODO(nikhilar) Move function to a utils file.
@@ -877,7 +939,7 @@ class Pointclouds:
         ):
             if n_points > max_:
                 keep_np = np.random.choice(n_points, max_, replace=False)
-                keep = torch.tensor(keep_np).to(points.device)
+                keep = torch.tensor(keep_np, device=points.device, dtype=torch.int64)
                 points = points[keep]
                 if features is not None:
                     features = features[keep]
@@ -1022,13 +1084,15 @@ class Pointclouds:
         new_points_list, new_normals_list, new_features_list = [], None, None
         for points in self.points_list():
             new_points_list.extend(points.clone() for _ in range(N))
-        if self.normals_list() is not None:
+        normals_list = self.normals_list()
+        if normals_list is not None:
             new_normals_list = []
-            for normals in self.normals_list():
+            for normals in normals_list:
                 new_normals_list.extend(normals.clone() for _ in range(N))
-        if self.features_list() is not None:
+        features_list = self.features_list()
+        if features_list is not None:
             new_features_list = []
-            for features in self.features_list():
+            for features in features_list:
                 new_features_list.extend(features.clone() for _ in range(N))
         return self.__class__(
             points=new_points_list, normals=new_normals_list, features=new_features_list
@@ -1160,5 +1224,42 @@ class Pointclouds:
             ]
             box = torch.cat(box, 0)
 
-        idx = (points_packed >= box[:, 0]) * (points_packed <= box[:, 1])
-        return idx
+        coord_inside = (points_packed >= box[:, 0]) * (points_packed <= box[:, 1])
+        return coord_inside.all(dim=-1)
+
+
+def join_pointclouds_as_batch(pointclouds: Sequence[Pointclouds]) -> Pointclouds:
+    """
+    Merge a list of Pointclouds objects into a single batched Pointclouds
+    object. All pointclouds must be on the same device.
+
+    Args:
+        batch: List of Pointclouds objects each with batch dim [b1, b2, ..., bN]
+    Returns:
+        pointcloud: Poinclouds object with all input pointclouds collated into
+            a single object with batch dim = sum(b1, b2, ..., bN)
+    """
+    if isinstance(pointclouds, Pointclouds) or not isinstance(pointclouds, Sequence):
+        raise ValueError("Wrong first argument to join_points_as_batch.")
+
+    device = pointclouds[0].device
+    if not all(p.device == device for p in pointclouds):
+        raise ValueError("Pointclouds must all be on the same device")
+
+    kwargs = {}
+    for field in ("points", "normals", "features"):
+        field_list = [getattr(p, field + "_list")() for p in pointclouds]
+        if None in field_list:
+            if field == "points":
+                raise ValueError("Pointclouds cannot have their points set to None!")
+            if not all(f is None for f in field_list):
+                raise ValueError(
+                    f"Pointclouds in the batch have some fields '{field}'"
+                    + " defined and some set to None."
+                )
+            field_list = None
+        else:
+            field_list = [p for points in field_list for p in points]
+        kwargs[field] = field_list
+
+    return Pointclouds(**kwargs)

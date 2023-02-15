@@ -1,4 +1,4 @@
-# Copyright (c) Facebook, Inc. and its affiliates.
+# Copyright (c) Meta Platforms, Inc. and affiliates.
 # All rights reserved.
 #
 # This source code is licensed under the BSD-style license found in the
@@ -56,9 +56,11 @@ def sample_farthest_points(
     # Validate inputs
     if lengths is None:
         lengths = torch.full((N,), P, dtype=torch.int64, device=device)
-
-    if lengths.shape != (N,):
-        raise ValueError("points and lengths must have same batch dimension.")
+    else:
+        if lengths.shape != (N,):
+            raise ValueError("points and lengths must have same batch dimension.")
+        if lengths.max() > P:
+            raise ValueError("A value in lengths was too large.")
 
     # TODO: support providing K as a ratio of the total number of points instead of as an int
     if isinstance(K, int):
@@ -81,6 +83,7 @@ def sample_farthest_points(
     start_idxs = torch.zeros_like(lengths)
     if random_start_point:
         for n in range(N):
+            # pyre-fixme[6]: For 1st param expected `int` but got `Tensor`.
             start_idxs[n] = torch.randint(high=lengths[n], size=(1,)).item()
 
     with torch.no_grad():
@@ -106,9 +109,11 @@ def sample_farthest_points_naive(
     # Validate inputs
     if lengths is None:
         lengths = torch.full((N,), P, dtype=torch.int64, device=device)
-
-    if lengths.shape[0] != N:
-        raise ValueError("points and lengths must have same batch dimension.")
+    else:
+        if lengths.shape != (N,):
+            raise ValueError("points and lengths must have same batch dimension.")
+        if lengths.max() > P:
+            raise ValueError("Invalid lengths.")
 
     # TODO: support providing K as a ratio of the total number of points instead of as an int
     if isinstance(K, int):
@@ -128,14 +133,23 @@ def sample_farthest_points_naive(
     for n in range(N):
         # Initialize an array for the sampled indices, shape: (max_K,)
         sample_idx_batch = torch.full(
-            (max_K,), fill_value=-1, dtype=torch.int64, device=device
+            # pyre-fixme[6]: For 1st param expected `Union[List[int], Size,
+            #  typing.Tuple[int, ...]]` but got `Tuple[Tensor]`.
+            (max_K,),
+            fill_value=-1,
+            dtype=torch.int64,
+            device=device,
         )
 
         # Initialize closest distances to inf, shape: (P,)
         # This will be updated at each iteration to track the closest distance of the
         # remaining points to any of the selected points
         closest_dists = points.new_full(
-            (lengths[n],), float("inf"), dtype=torch.float32
+            # pyre-fixme[6]: For 1st param expected `Union[List[int], Size,
+            #  typing.Tuple[int, ...]]` but got `Tuple[Tensor]`.
+            (lengths[n],),
+            float("inf"),
+            dtype=torch.float32,
         )
 
         # Select a random point index and save it as the starting point
@@ -143,6 +157,10 @@ def sample_farthest_points_naive(
         sample_idx_batch[0] = selected_idx
 
         # If the pointcloud has fewer than K points then only iterate over the min
+        # pyre-fixme[6]: For 1st param expected `SupportsRichComparisonT` but got
+        #  `Tensor`.
+        # pyre-fixme[6]: For 2nd param expected `SupportsRichComparisonT` but got
+        #  `Tensor`.
         k_n = min(lengths[n], K[n])
 
         # Iteratively select points for a maximum of k_n
@@ -151,7 +169,9 @@ def sample_farthest_points_naive(
             # and all the other points. If a point has already been selected
             # it's distance will be 0.0 so it will not be selected again as the max.
             dist = points[n, selected_idx, :] - points[n, : lengths[n], :]
-            dist_to_last_selected = (dist ** 2).sum(-1)  # (P - i)
+            # pyre-fixme[58]: `**` is not supported for operand types `Tensor` and
+            #  `int`.
+            dist_to_last_selected = (dist**2).sum(-1)  # (P - i)
 
             # If closer than currently saved distance to one of the selected
             # points, then updated closest_dists

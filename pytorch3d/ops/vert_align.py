@@ -1,4 +1,4 @@
-# Copyright (c) Facebook, Inc. and its affiliates.
+# Copyright (c) Meta Platforms, Inc. and affiliates.
 # All rights reserved.
 #
 # This source code is licensed under the BSD-style license found in the
@@ -100,7 +100,6 @@ def vert_align(
                 .view(-1, 1)
                 .expand(-1, feats_sampled.shape[-1])
             )
-            # pyre-fixme[16]: `Tensor` has no attribute `gather`.
             feats_sampled = feats_sampled.gather(0, idx)  # (sum(V), C)
 
     return feats_sampled

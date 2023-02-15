@@ -1,4 +1,4 @@
-# Copyright (c) Facebook, Inc. and its affiliates.
+# Copyright (c) Meta Platforms, Inc. and affiliates.
 # All rights reserved.
 #
 # This source code is licensed under the BSD-style license found in the
@@ -112,6 +112,8 @@ def mesh_laplacian_smoothing(meshes, method: str = "uniform"):
             if method == "cot":
                 norm_w = torch.sparse.sum(L, dim=1).to_dense().view(-1, 1)
                 idx = norm_w > 0
+                # pyre-fixme[58]: `/` is not supported for operand types `float` and
+                #  `Tensor`.
                 norm_w[idx] = 1.0 / norm_w[idx]
             else:
                 L_sum = torch.sparse.sum(L, dim=1).to_dense().view(-1, 1)

@@ -1,4 +1,4 @@
-# Copyright (c) Facebook, Inc. and its affiliates.
+# Copyright (c) Meta Platforms, Inc. and affiliates.
 # All rights reserved.
 #
 # This source code is licensed under the BSD-style license found in the
@@ -8,11 +8,12 @@ import unittest
 from itertools import product
 
 import torch
-from common_testing import TestCaseMixin, get_random_cuda_device
 from pytorch3d.ops import sample_points_from_meshes
 from pytorch3d.ops.ball_query import ball_query
 from pytorch3d.ops.knn import _KNN
 from pytorch3d.utils import ico_sphere
+
+from .common_testing import get_random_cuda_device, TestCaseMixin
 
 
 class TestBallQuery(TestCaseMixin, unittest.TestCase):

@@ -1,4 +1,4 @@
-# Copyright (c) Facebook, Inc. and its affiliates.
+# Copyright (c) Meta Platforms, Inc. and affiliates.
 # All rights reserved.
 #
 # This source code is licensed under the BSD-style license found in the
@@ -105,7 +105,7 @@ def _null_space(m, kernel_dim):
             kernel vectors, of size B x kernel_dim
     """
     mTm = torch.bmm(m.transpose(1, 2), m)
-    s, v = torch.symeig(mTm, eigenvectors=True)
+    s, v = torch.linalg.eigh(mTm)
     return v[:, :, :kernel_dim].reshape(-1, 4, 3, kernel_dim), s[:, :kernel_dim]
 
 
@@ -205,7 +205,7 @@ def _kernel_vec_distances(v):
     # this should produce B x 6 x (D choose 2) tensor
 
     # we should take dot-product of all (i,i)
-    rows_ii = (dv ** 2).sum(dim=-2)
+    rows_ii = (dv**2).sum(dim=-2)
     # this should produce B x 6 x D tensor
 
     return torch.cat((rows_ii, rows_2ij), dim=-1)

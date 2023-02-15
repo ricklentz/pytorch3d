@@ -1,4 +1,4 @@
-# Copyright (c) Facebook, Inc. and its affiliates.
+# Copyright (c) Meta Platforms, Inc. and affiliates.
 # All rights reserved.
 #
 # This source code is licensed under the BSD-style license found in the
@@ -6,20 +6,28 @@
 
 import math
 import warnings
-from typing import List, Optional, Sequence, Tuple, Union
+from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 
 import numpy as np
 import torch
 import torch.nn.functional as F
-from pytorch3d.common.types import Device
+from pytorch3d.common.datatypes import Device
 from pytorch3d.transforms import Rotate, Transform3d, Translate
 
-from .utils import TensorProperties, convert_to_tensors_and_broadcast
+from .utils import convert_to_tensors_and_broadcast, TensorProperties
 
 
 # Default values for rotation and translation matrices.
 _R = torch.eye(3)[None]  # (1, 3, 3)
 _T = torch.zeros(1, 3)  # (1, 3)
+
+# An input which is a float per batch element
+_BatchFloatType = Union[float, Sequence[float], torch.Tensor]
+
+# one or two floats per batch element
+_FocalLengthType = Union[
+    float, Sequence[Tuple[float]], Sequence[Tuple[float, float]], torch.Tensor
+]
 
 
 class CamerasBase(TensorProperties):
@@ -28,16 +36,17 @@ class CamerasBase(TensorProperties):
 
     For cameras, there are four different coordinate systems (or spaces)
     - World coordinate system: This is the system the object lives - the world.
-    - Camera view coordinate system: This is the system that has its origin on the camera
-        and the and the Z-axis perpendicular to the image plane.
+    - Camera view coordinate system: This is the system that has its origin on
+        the camera and the Z-axis perpendicular to the image plane.
         In PyTorch3D, we assume that +X points left, and +Y points up and
         +Z points out from the image plane.
         The transformation from world --> view happens after applying a rotation (R)
         and translation (T)
     - NDC coordinate system: This is the normalized coordinate system that confines
-        in a volume the rendered part of the object or scene. Also known as view volume.
-        For square images, given the PyTorch3D convention, (+1, +1, znear) is the top left near corner,
-        and (-1, -1, zfar) is the bottom right far corner of the volume.
+        points in a volume the rendered part of the object or scene, also known as
+        view volume. For square images, given the PyTorch3D convention, (+1, +1, znear)
+        is the top left near corner, and (-1, -1, zfar) is the bottom right far
+        corner of the volume.
         The transformation from view --> NDC happens after applying the camera
         projection matrix (P) if defined in NDC space.
         For non square images, we scale the points such that smallest side
@@ -45,10 +54,9 @@ class CamerasBase(TensorProperties):
     - Screen coordinate system: This is another representation of the view volume with
         the XY coordinates defined in image space instead of a normalized space.
 
-    A better illustration of the coordinate systems can be found in
-    pytorch3d/docs/notes/cameras.md.
+    An illustration of the coordinate systems can be found in pytorch3d/docs/notes/cameras.md.
 
-    It defines methods that are common to all camera models:
+    CameraBase defines methods that are common to all camera models:
         - `get_camera_center` that returns the optical center of the camera in
             world coordinates
         - `get_world_to_view_transform` which returns a 3D transform from
@@ -74,7 +82,16 @@ class CamerasBase(TensorProperties):
     boolean argument of the function.
     """
 
-    def get_projection_transform(self):
+    # Used in __getitem__ to index the relevant fields
+    # When creating a new camera, this should be set in the __init__
+    _FIELDS: Tuple[str, ...] = ()
+
+    # Names of fields which are a constant property of the whole batch, rather
+    # than themselves a batch of data.
+    # When joining objects into a batch, they will have to agree.
+    _SHARED_FIELDS: Tuple[str, ...] = ()
+
+    def get_projection_transform(self, **kwargs):
         """
         Calculate the projective transformation matrix.
 
@@ -88,7 +105,7 @@ class CamerasBase(TensorProperties):
         """
         raise NotImplementedError()
 
-    def unproject_points(self):
+    def unproject_points(self, xy_depth: torch.Tensor, **kwargs):
         """
         Transform input points from camera coodinates (NDC or screen)
         to the world / camera coordinates.
@@ -129,6 +146,10 @@ class CamerasBase(TensorProperties):
                 coordinates using the camera extrinsics `R` and `T`.
                 `False` ignores `R` and `T` and unprojects to
                 the camera view coordinates.
+            from_ndc: If `False` (default), assumes xy part of input is in
+                NDC space if self.in_ndc(), otherwise in screen space. If
+                `True`, assumes xy is in NDC space even if the camera
+                is defined in screen space.
 
         Returns
             new_points: unprojected points with the same shape as `xy_depth`.
@@ -145,8 +166,8 @@ class CamerasBase(TensorProperties):
                 as keyword arguments to override the default values
                 set in __init__.
 
-        Setting T here will update the values set in init as this
-        value may be needed later on in the rendering pipeline e.g. for
+        Setting R or T here will update the values set in init as these
+        values may be needed later on in the rendering pipeline e.g. for
         lighting calculations.
 
         Returns:
@@ -215,8 +236,9 @@ class CamerasBase(TensorProperties):
         self, points, eps: Optional[float] = None, **kwargs
     ) -> torch.Tensor:
         """
-        Transform input points from world to camera space with the
-        projection matrix defined by the camera.
+        Transform input points from world to camera space.
+        If camera is defined in NDC space, the projected points are in NDC space.
+        If camera is defined in screen space, the projected points are in screen space.
 
         For `CamerasBase.transform_points`, setting `eps > 0`
         stabilizes gradients since it leads to avoiding division
@@ -227,7 +249,7 @@ class CamerasBase(TensorProperties):
             eps: If eps!=None, the argument is used to clamp the
                 divisor in the homogeneous normalization of the points
                 transformed to the ndc space. Please see
-                `transforms.Transform3D.transform_points` for details.
+                `transforms.Transform3d.transform_points` for details.
 
                 For `CamerasBase.transform_points`, setting `eps > 0`
                 stabilizes gradients since it leads to avoiding division
@@ -245,7 +267,7 @@ class CamerasBase(TensorProperties):
         Returns the transform from camera projection space (screen or NDC) to NDC space.
         For cameras that can be specified in screen space, this transform
         allows points to be converted from screen to NDC space.
-        The default transform scales the points from [0, W-1]x[0, H-1]
+        The default transform scales the points from [0, W]x[0, H]
         to [-1, 1]x[-u, u] or [-u, u]x[-1, 1] where u > 1 is the aspect ratio of the image.
         This function should be modified per camera definitions if need be,
         e.g. for Perspective/Orthographic cameras we provide a custom implementation.
@@ -283,7 +305,7 @@ class CamerasBase(TensorProperties):
             eps: If eps!=None, the argument is used to clamp the
                 divisor in the homogeneous normalization of the points
                 transformed to the ndc space. Please see
-                `transforms.Transform3D.transform_points` for details.
+                `transforms.Transform3d.transform_points` for details.
 
                 For `CamerasBase.transform_points`, setting `eps > 0`
                 stabilizes gradients since it leads to avoiding division
@@ -301,7 +323,7 @@ class CamerasBase(TensorProperties):
         return world_to_ndc_transform.transform_points(points, eps=eps)
 
     def transform_points_screen(
-        self, points, eps: Optional[float] = None, **kwargs
+        self, points, eps: Optional[float] = None, with_xyflip: bool = True, **kwargs
     ) -> torch.Tensor:
         """
         Transforms points from PyTorch3D world/camera space to screen space.
@@ -313,12 +335,17 @@ class CamerasBase(TensorProperties):
             eps: If eps!=None, the argument is used to clamp the
                 divisor in the homogeneous normalization of the points
                 transformed to the ndc space. Please see
-                `transforms.Transform3D.transform_points` for details.
+                `transforms.Transform3d.transform_points` for details.
 
                 For `CamerasBase.transform_points`, setting `eps > 0`
                 stabilizes gradients since it leads to avoiding division
                 by excessively low numbers for points close to the
                 camera plane.
+            with_xyflip: If True, flip x and y directions. In world/camera/ndc coords,
+                +x points to the left and +y up. If with_xyflip is true, in screen
+                coords +x points right, and +y down, following the usual RGB image
+                convention. Warning: do not set to False unless you know what you're
+                doing!
 
         Returns
             new_points: transformed points with the same shape as the input.
@@ -326,7 +353,7 @@ class CamerasBase(TensorProperties):
         points_ndc = self.transform_points_ndc(points, eps=eps, **kwargs)
         image_size = kwargs.get("image_size", self.get_image_size())
         return get_ndc_to_screen_transform(
-            self, with_xyflip=True, image_size=image_size
+            self, with_xyflip=with_xyflip, image_size=image_size
         ).transform_points(points_ndc, eps=eps)
 
     def clone(self):
@@ -357,6 +384,78 @@ class CamerasBase(TensorProperties):
         """
         return self.image_size if hasattr(self, "image_size") else None
 
+    def __getitem__(
+        self, index: Union[int, List[int], torch.BoolTensor, torch.LongTensor]
+    ) -> "CamerasBase":
+        """
+        Override for the __getitem__ method in TensorProperties which needs to be
+        refactored.
+
+        Args:
+            index: an integer index, list/tensor of integer indices, or tensor of boolean
+                indicators used to filter all the fields in the cameras given by self._FIELDS.
+        Returns:
+            an instance of the current cameras class with only the values at the selected index.
+        """
+
+        kwargs = {}
+
+        tensor_types = {
+            # pyre-fixme[16]: Module `cuda` has no attribute `BoolTensor`.
+            "bool": (torch.BoolTensor, torch.cuda.BoolTensor),
+            # pyre-fixme[16]: Module `cuda` has no attribute `LongTensor`.
+            "long": (torch.LongTensor, torch.cuda.LongTensor),
+        }
+        if not isinstance(
+            index, (int, list, *tensor_types["bool"], *tensor_types["long"])
+        ) or (
+            isinstance(index, list)
+            and not all(isinstance(i, int) and not isinstance(i, bool) for i in index)
+        ):
+            msg = (
+                "Invalid index type, expected int, List[int] or Bool/LongTensor; got %r"
+            )
+            raise ValueError(msg % type(index))
+
+        if isinstance(index, int):
+            index = [index]
+
+        if isinstance(index, tensor_types["bool"]):
+            # pyre-fixme[16]: Item `List` of `Union[List[int], BoolTensor,
+            #  LongTensor]` has no attribute `ndim`.
+            # pyre-fixme[16]: Item `List` of `Union[List[int], BoolTensor,
+            #  LongTensor]` has no attribute `shape`.
+            if index.ndim != 1 or index.shape[0] != len(self):
+                raise ValueError(
+                    # pyre-fixme[16]: Item `List` of `Union[List[int], BoolTensor,
+                    #  LongTensor]` has no attribute `shape`.
+                    f"Boolean index of shape {index.shape} does not match cameras"
+                )
+        elif max(index) >= len(self):
+            raise IndexError(f"Index {max(index)} is out of bounds for select cameras")
+
+        for field in self._FIELDS:
+            val = getattr(self, field, None)
+            if val is None:
+                continue
+
+            # e.g. "in_ndc" is set as attribute "_in_ndc" on the class
+            # but provided as "in_ndc" on initialization
+            if field.startswith("_"):
+                field = field[1:]
+
+            if isinstance(val, (str, bool)):
+                kwargs[field] = val
+            elif isinstance(val, torch.Tensor):
+                # In the init, all inputs will be converted to
+                # tensors before setting as attributes
+                kwargs[field] = val[index]
+            else:
+                raise ValueError(f"Field {field} type is not supported for indexing")
+
+        kwargs["device"] = self.device
+        return self.__class__(**kwargs)
+
 
 ############################################################
 #             Field of View Camera Classes                 #
@@ -364,10 +463,10 @@ class CamerasBase(TensorProperties):
 
 
 def OpenGLPerspectiveCameras(
-    znear=1.0,
-    zfar=100.0,
-    aspect_ratio=1.0,
-    fov=60.0,
+    znear: _BatchFloatType = 1.0,
+    zfar: _BatchFloatType = 100.0,
+    aspect_ratio: _BatchFloatType = 1.0,
+    fov: _BatchFloatType = 60.0,
     degrees: bool = True,
     R: torch.Tensor = _R,
     T: torch.Tensor = _T,
@@ -401,7 +500,7 @@ class FoVPerspectiveCameras(CamerasBase):
     """
     A class which stores a batch of parameters to generate a batch of
     projection matrices by specifying the field of view.
-    The definition of the parameters follow the OpenGL perspective camera.
+    The definitions of the parameters follow the OpenGL perspective camera.
 
     The extrinsics of the camera (R and T matrices) can also be set in the
     initializer or passed in to `get_full_projection_transform` to get
@@ -429,12 +528,26 @@ class FoVPerspectiveCameras(CamerasBase):
     for rasterization.
     """
 
+    # For __getitem__
+    _FIELDS = (
+        "K",
+        "znear",
+        "zfar",
+        "aspect_ratio",
+        "fov",
+        "R",
+        "T",
+        "degrees",
+    )
+
+    _SHARED_FIELDS = ("degrees",)
+
     def __init__(
         self,
-        znear=1.0,
-        zfar=100.0,
-        aspect_ratio=1.0,
-        fov=60.0,
+        znear: _BatchFloatType = 1.0,
+        zfar: _BatchFloatType = 100.0,
+        aspect_ratio: _BatchFloatType = 1.0,
+        fov: _BatchFloatType = 60.0,
         degrees: bool = True,
         R: torch.Tensor = _R,
         T: torch.Tensor = _T,
@@ -510,7 +623,9 @@ class FoVPerspectiveCameras(CamerasBase):
         # so the so the z sign is 1.0.
         z_sign = 1.0
 
+        # pyre-fixme[58]: `/` is not supported for operand types `float` and `Tensor`.
         K[:, 0, 0] = 2.0 * znear / (max_x - min_x)
+        # pyre-fixme[58]: `/` is not supported for operand types `float` and `Tensor`.
         K[:, 1, 1] = 2.0 * znear / (max_y - min_y)
         K[:, 0, 2] = (max_x + min_x) / (max_x - min_x)
         K[:, 1, 2] = (max_y + min_y) / (max_y - min_y)
@@ -585,7 +700,7 @@ class FoVPerspectiveCameras(CamerasBase):
         xy_depth: torch.Tensor,
         world_coordinates: bool = True,
         scaled_depth_input: bool = False,
-        **kwargs
+        **kwargs,
     ) -> torch.Tensor:
         """>!
         FoV cameras further allow for passing depth in world units
@@ -632,12 +747,12 @@ class FoVPerspectiveCameras(CamerasBase):
 
 
 def OpenGLOrthographicCameras(
-    znear=1.0,
-    zfar=100.0,
-    top=1.0,
-    bottom=-1.0,
-    left=-1.0,
-    right=1.0,
+    znear: _BatchFloatType = 1.0,
+    zfar: _BatchFloatType = 100.0,
+    top: _BatchFloatType = 1.0,
+    bottom: _BatchFloatType = -1.0,
+    left: _BatchFloatType = -1.0,
+    right: _BatchFloatType = 1.0,
     scale_xyz=((1.0, 1.0, 1.0),),  # (1, 3)
     R: torch.Tensor = _R,
     T: torch.Tensor = _T,
@@ -673,17 +788,31 @@ class FoVOrthographicCameras(CamerasBase):
     """
     A class which stores a batch of parameters to generate a batch of
     projection matrices by specifying the field of view.
-    The definition of the parameters follow the OpenGL orthographic camera.
+    The definitions of the parameters follow the OpenGL orthographic camera.
     """
+
+    # For __getitem__
+    _FIELDS = (
+        "K",
+        "znear",
+        "zfar",
+        "R",
+        "T",
+        "max_y",
+        "min_y",
+        "max_x",
+        "min_x",
+        "scale_xyz",
+    )
 
     def __init__(
         self,
-        znear=1.0,
-        zfar=100.0,
-        max_y=1.0,
-        min_y=-1.0,
-        max_x=1.0,
-        min_x=-1.0,
+        znear: _BatchFloatType = 1.0,
+        zfar: _BatchFloatType = 100.0,
+        max_y: _BatchFloatType = 1.0,
+        min_y: _BatchFloatType = -1.0,
+        max_x: _BatchFloatType = 1.0,
+        min_x: _BatchFloatType = -1.0,
         scale_xyz=((1.0, 1.0, 1.0),),  # (1, 3)
         R: torch.Tensor = _R,
         T: torch.Tensor = _T,
@@ -814,7 +943,7 @@ class FoVOrthographicCameras(CamerasBase):
         xy_depth: torch.Tensor,
         world_coordinates: bool = True,
         scaled_depth_input: bool = False,
-        **kwargs
+        **kwargs,
     ) -> torch.Tensor:
         """>!
         FoV cameras further allow for passing depth in world units
@@ -865,7 +994,7 @@ Note that the MultiView Cameras accept parameters in NDC space.
 
 
 def SfMPerspectiveCameras(
-    focal_length=1.0,
+    focal_length: _FocalLengthType = 1.0,
     principal_point=((0.0, 0.0),),
     R: torch.Tensor = _R,
     T: torch.Tensor = _T,
@@ -902,9 +1031,22 @@ class PerspectiveCameras(CamerasBase):
     If parameters are specified in screen space, `in_ndc` must be set to False.
     """
 
+    # For __getitem__
+    _FIELDS = (
+        "K",
+        "R",
+        "T",
+        "focal_length",
+        "principal_point",
+        "_in_ndc",  # arg is in_ndc but attribute set as _in_ndc
+        "image_size",
+    )
+
+    _SHARED_FIELDS = ("_in_ndc",)
+
     def __init__(
         self,
-        focal_length=1.0,
+        focal_length: _FocalLengthType = 1.0,
         principal_point=((0.0, 0.0),),
         R: torch.Tensor = _R,
         T: torch.Tensor = _T,
@@ -952,6 +1094,12 @@ class PerspectiveCameras(CamerasBase):
         else:
             self.image_size = None
 
+        # When focal length is provided as one value, expand to
+        # create (N, 2) shape tensor
+        if self.focal_length.ndim == 1:  # (N,)
+            self.focal_length = self.focal_length[:, None]  # (N, 1)
+        self.focal_length = self.focal_length.expand(-1, 2)  # (N, 2)
+
     def get_projection_transform(self, **kwargs) -> Transform3d:
         """
         Calculate the projection matrix using the
@@ -998,12 +1146,27 @@ class PerspectiveCameras(CamerasBase):
         return transform
 
     def unproject_points(
-        self, xy_depth: torch.Tensor, world_coordinates: bool = True, **kwargs
+        self,
+        xy_depth: torch.Tensor,
+        world_coordinates: bool = True,
+        from_ndc: bool = False,
+        **kwargs,
     ) -> torch.Tensor:
+        """
+        Args:
+            from_ndc: If `False` (default), assumes xy part of input is in
+                NDC space if self.in_ndc(), otherwise in screen space. If
+                `True`, assumes xy is in NDC space even if the camera
+                is defined in screen space.
+        """
         if world_coordinates:
             to_camera_transform = self.get_full_projection_transform(**kwargs)
         else:
             to_camera_transform = self.get_projection_transform(**kwargs)
+        if from_ndc:
+            to_camera_transform = to_camera_transform.compose(
+                self.get_ndc_camera_transform()
+            )
 
         unprojection_transform = to_camera_transform.inverse()
         xy_inv_depth = torch.cat(
@@ -1029,6 +1192,8 @@ class PerspectiveCameras(CamerasBase):
         If the camera is defined already in NDC space, the transform is identity.
         For cameras defined in screen space, we adjust the principal point computation
         which is defined in the image space (commonly) and scale the points to NDC space.
+
+        This transform leaves the depth unchanged.
 
         Important: This transforms assumes PyTorch3D conventions for the input points,
         i.e. +X left, +Y up.
@@ -1067,7 +1232,7 @@ class PerspectiveCameras(CamerasBase):
 
 
 def SfMOrthographicCameras(
-    focal_length=1.0,
+    focal_length: _FocalLengthType = 1.0,
     principal_point=((0.0, 0.0),),
     R: torch.Tensor = _R,
     T: torch.Tensor = _T,
@@ -1104,9 +1269,22 @@ class OrthographicCameras(CamerasBase):
     If parameters are specified in screen space, `in_ndc` must be set to False.
     """
 
+    # For __getitem__
+    _FIELDS = (
+        "K",
+        "R",
+        "T",
+        "focal_length",
+        "principal_point",
+        "_in_ndc",
+        "image_size",
+    )
+
+    _SHARED_FIELDS = ("_in_ndc",)
+
     def __init__(
         self,
-        focal_length=1.0,
+        focal_length: _FocalLengthType = 1.0,
         principal_point=((0.0, 0.0),),
         R: torch.Tensor = _R,
         T: torch.Tensor = _T,
@@ -1152,6 +1330,12 @@ class OrthographicCameras(CamerasBase):
                 raise ValueError("Image_size provided has invalid values")
         else:
             self.image_size = None
+
+        # When focal length is provided as one value, expand to
+        # create (N, 2) shape tensor
+        if self.focal_length.ndim == 1:  # (N,)
+            self.focal_length = self.focal_length[:, None]  # (N, 1)
+        self.focal_length = self.focal_length.expand(-1, 2)  # (N, 2)
 
     def get_projection_transform(self, **kwargs) -> Transform3d:
         """
@@ -1199,12 +1383,27 @@ class OrthographicCameras(CamerasBase):
         return transform
 
     def unproject_points(
-        self, xy_depth: torch.Tensor, world_coordinates: bool = True, **kwargs
+        self,
+        xy_depth: torch.Tensor,
+        world_coordinates: bool = True,
+        from_ndc: bool = False,
+        **kwargs,
     ) -> torch.Tensor:
+        """
+        Args:
+            from_ndc: If `False` (default), assumes xy part of input is in
+                NDC space if self.in_ndc(), otherwise in screen space. If
+                `True`, assumes xy is in NDC space even if the camera
+                is defined in screen space.
+        """
         if world_coordinates:
             to_camera_transform = self.get_full_projection_transform(**kwargs)
         else:
             to_camera_transform = self.get_projection_transform(**kwargs)
+        if from_ndc:
+            to_camera_transform = to_camera_transform.compose(
+                self.get_ndc_camera_transform()
+            )
 
         unprojection_transform = to_camera_transform.inverse()
         return unprojection_transform.transform_points(xy_depth)
@@ -1484,11 +1683,11 @@ def look_at_rotation(
 
 
 def look_at_view_transform(
-    dist=1.0,
-    elev=0.0,
-    azim=0.0,
+    dist: _BatchFloatType = 1.0,
+    elev: _BatchFloatType = 0.0,
+    azim: _BatchFloatType = 0.0,
     degrees: bool = True,
-    eye: Optional[Sequence] = None,
+    eye: Optional[Union[Sequence, torch.Tensor]] = None,
     at=((0, 0, 0),),  # (1, 3)
     up=((0, 1, 0),),  # (1, 3)
     device: Device = "cpu",
@@ -1581,18 +1780,20 @@ def get_ndc_to_screen_transform(
     K = torch.zeros((cameras._N, 4, 4), device=cameras.device, dtype=torch.float32)
     if not torch.is_tensor(image_size):
         image_size = torch.tensor(image_size, device=cameras.device)
+    # pyre-fixme[16]: Item `List` of `Union[List[typing.Any], Tensor, Tuple[Any,
+    #  ...]]` has no attribute `view`.
     image_size = image_size.view(-1, 2)  # of shape (1 or B)x2
     height, width = image_size.unbind(1)
 
     # For non square images, we scale the points such that smallest side
     # has range [-1, 1] and the largest side has range [-u, u], with u > 1.
     # This convention is consistent with the PyTorch3D renderer
-    scale = (image_size.min(dim=1).values - 1.0) / 2.0
+    scale = (image_size.min(dim=1).values - 0.0) / 2.0
 
     K[:, 0, 0] = scale
     K[:, 1, 1] = scale
-    K[:, 0, 3] = -1.0 * (width - 1.0) / 2.0
-    K[:, 1, 3] = -1.0 * (height - 1.0) / 2.0
+    K[:, 0, 3] = -1.0 * (width - 0.0) / 2.0
+    K[:, 1, 3] = -1.0 * (height - 0.0) / 2.0
     K[:, 2, 2] = 1.0
     K[:, 3, 3] = 1.0
 
@@ -1647,4 +1848,27 @@ def get_screen_to_ndc_transform(
         with_xyflip=with_xyflip,
         image_size=image_size,
     ).inverse()
+    return transform
+
+
+def try_get_projection_transform(
+    cameras: CamerasBase, cameras_kwargs: Dict[str, Any]
+) -> Optional[Transform3d]:
+    """
+    Try block to get projection transform from cameras and cameras_kwargs.
+
+    Args:
+        cameras: cameras instance, can be linear cameras or nonliear cameras
+        cameras_kwargs: camera parameters to be passed to cameras
+
+    Returns:
+        If the camera implemented projection_transform, return the
+        projection transform; Otherwise, return None
+    """
+
+    transform = None
+    try:
+        transform = cameras.get_projection_transform(**cameras_kwargs)
+    except NotImplementedError:
+        pass
     return transform

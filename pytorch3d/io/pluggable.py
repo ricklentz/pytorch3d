@@ -1,4 +1,4 @@
-# Copyright (c) Facebook, Inc. and its affiliates.
+# Copyright (c) Meta Platforms, Inc. and affiliates.
 # All rights reserved.
 #
 # This source code is licensed under the BSD-style license found in the
@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Deque, Optional, Union
 
 from iopath.common.file_io import PathManager
-from pytorch3d.common.types import Device
+from pytorch3d.common.datatypes import Device
 from pytorch3d.structures import Meshes, Pointclouds
 
 from .obj_io import MeshObjFormat
@@ -25,19 +25,16 @@ This module has the master functions for loading and saving data.
 The main usage is via the IO object, and its methods
 `load_mesh`, `save_mesh`, `load_pointcloud` and `save_pointcloud`.
 
-For example, to load a mesh you might do
-```
-from pytorch3d.io import IO
+For example, to load a mesh you might do::
 
-mesh = IO().load_mesh("mymesh.obj")
-```
+    from pytorch3d.io import IO
 
-and to save a point cloud you might do
+    mesh = IO().load_mesh("mymesh.obj")
 
-```
-pcl = Pointclouds(...)
-IO().save_pointcloud(pcl, "output_pointcloud.obj")
-```
+and to save a point cloud you might do::
+
+    pcl = Pointclouds(...)
+    IO().save_pointcloud(pcl, "output_pointcloud.obj")
 
 """
 
@@ -158,6 +155,9 @@ class IO:
             include_textures: If textures are present, whether to try to save
                                 them.
         """
+        if not isinstance(data, Meshes):
+            raise ValueError("Meshes object expected.")
+
         if len(data) != 1:
             raise ValueError("Can only save a single mesh.")
 
@@ -207,6 +207,9 @@ class IO:
             path: file to write
             binary: If there is a choice, whether to save in a binary format.
         """
+        if not isinstance(data, Pointclouds):
+            raise ValueError("Pointclouds object expected.")
+
         if len(data) != 1:
             raise ValueError("Can only save a single point cloud.")
 

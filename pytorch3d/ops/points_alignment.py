@@ -1,11 +1,11 @@
-# Copyright (c) Facebook, Inc. and its affiliates.
+# Copyright (c) Meta Platforms, Inc. and affiliates.
 # All rights reserved.
 #
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
 import warnings
-from typing import TYPE_CHECKING, List, NamedTuple, Optional, Union
+from typing import List, NamedTuple, Optional, TYPE_CHECKING, Union
 
 import torch
 from pytorch3d.ops import knn_points
@@ -141,7 +141,7 @@ def iterative_closest_point(
                 "(minibatch, dim, dim), T is a batch of dim-dimensional "
                 "translations of shape (minibatch, dim) and s is a batch "
                 "of scalars of shape (minibatch,)."
-            )
+            ) from None
         # apply the init transform to the input point cloud
         Xt = _apply_similarity_transform(Xt, R, T, s)
     else:
@@ -180,6 +180,7 @@ def iterative_closest_point(
         t_history.append(SimilarityTransform(R, T, s))
 
         # compute the root mean squared error
+        # pyre-fixme[58]: `**` is not supported for operand types `Tensor` and `int`.
         Xt_sq_diff = ((Xt - Xt_nn_points) ** 2).sum(2)
         rmse = oputil.wmean(Xt_sq_diff[:, :, None], mask_X).sqrt()[:, 0, 0]
 

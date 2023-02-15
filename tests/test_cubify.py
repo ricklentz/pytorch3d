@@ -1,4 +1,4 @@
-# Copyright (c) Facebook, Inc. and its affiliates.
+# Copyright (c) Meta Platforms, Inc. and affiliates.
 # All rights reserved.
 #
 # This source code is licensed under the BSD-style license found in the
@@ -7,8 +7,9 @@
 import unittest
 
 import torch
-from common_testing import TestCaseMixin
 from pytorch3d.ops import cubify
+
+from .common_testing import TestCaseMixin
 
 
 class TestCubify(TestCaseMixin, unittest.TestCase):

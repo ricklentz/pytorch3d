@@ -1,4 +1,4 @@
-# Copyright (c) Facebook, Inc. and its affiliates.
+# Copyright (c) Meta Platforms, Inc. and affiliates.
 # All rights reserved.
 #
 # This source code is licensed under the BSD-style license found in the
@@ -63,5 +63,4 @@ class _MeshFaceAreasNormals(Function):
         return grad_verts, None
 
 
-# pyre-fixme[16]: `_MeshFaceAreasNormals` has no attribute `apply`.
 mesh_face_areas_normals = _MeshFaceAreasNormals.apply

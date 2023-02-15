@@ -1,4 +1,4 @@
-# Copyright (c) Facebook, Inc. and its affiliates.
+# Copyright (c) Meta Platforms, Inc. and affiliates.
 # All rights reserved.
 #
 # This source code is licensed under the BSD-style license found in the
@@ -8,13 +8,13 @@
 import copy
 import inspect
 import warnings
-from typing import Any, Optional, Union
+from typing import Any, List, Optional, Tuple, TypeVar, Union
 
 import numpy as np
 import torch
 import torch.nn as nn
 
-from ..common.types import Device, make_device
+from ..common.datatypes import Device, make_device
 
 
 class TensorAccessor(nn.Module):
@@ -155,7 +155,7 @@ class TensorProperties(nn.Module):
         Returns:
             if `index` is an index int/slice return a TensorAccessor class
             with getattribute/setattribute methods which return/update the value
-            at the index in the original camera.
+            at the index in the original class.
         """
         if isinstance(index, (int, slice)):
             return TensorAccessor(class_object=self, index=index)
@@ -163,6 +163,7 @@ class TensorProperties(nn.Module):
         msg = "Expected index of type int or slice; got %r"
         raise ValueError(msg % type(index))
 
+    # pyre-fixme[14]: `to` overrides method defined in `Module` inconsistently.
     def to(self, device: Device = "cpu") -> "TensorProperties":
         """
         In place operation to move class properties which are tensors to a
@@ -180,6 +181,7 @@ class TensorProperties(nn.Module):
     def cpu(self) -> "TensorProperties":
         return self.to("cpu")
 
+    # pyre-fixme[14]: `cuda` overrides method defined in `Module` inconsistently.
     def cuda(self, device: Optional[int] = None) -> "TensorProperties":
         return self.to(f"cuda:{device}" if device is not None else "cuda")
 
@@ -189,7 +191,7 @@ class TensorProperties(nn.Module):
         """
         for k in dir(self):
             v = getattr(self, k)
-            if inspect.ismethod(v) or k.startswith("__"):
+            if inspect.ismethod(v) or k.startswith("__") or type(v) is TypeVar:
                 continue
             if torch.is_tensor(v):
                 v_clone = v.clone()
@@ -347,7 +349,110 @@ def convert_to_tensors_and_broadcast(
         expand_sizes = (N,) + (-1,) * len(c.shape[1:])
         args_Nd.append(c.expand(*expand_sizes))
 
-    if len(args) == 1:
-        args_Nd = args_Nd[0]  # Return the first element
-
     return args_Nd
+
+
+def ndc_grid_sample(
+    input: torch.Tensor,
+    grid_ndc: torch.Tensor,
+    *,
+    align_corners: bool = False,
+    **grid_sample_kwargs,
+) -> torch.Tensor:
+    """
+    Samples a tensor `input` of shape `(B, dim, H, W)` at 2D locations
+    specified by a tensor `grid_ndc` of shape `(B, ..., 2)` using
+    the `torch.nn.functional.grid_sample` function.
+    `grid_ndc` is specified in PyTorch3D NDC coordinate frame.
+
+    Args:
+        input: The tensor of shape `(B, dim, H, W)` to be sampled.
+        grid_ndc: A tensor of shape `(B, ..., 2)` denoting the set of
+            2D locations at which `input` is sampled.
+            See [1] for a detailed description of the NDC coordinates.
+        align_corners: Forwarded to the `torch.nn.functional.grid_sample`
+            call. See its docstring.
+        grid_sample_kwargs: Additional arguments forwarded to the
+            `torch.nn.functional.grid_sample` call. See the corresponding
+            docstring for a listing of the corresponding arguments.
+
+    Returns:
+        sampled_input: A tensor of shape `(B, dim, ...)` containing the samples
+            of `input` at 2D locations `grid_ndc`.
+
+    References:
+        [1] https://pytorch3d.org/docs/cameras
+    """
+
+    batch, *spatial_size, pt_dim = grid_ndc.shape
+    if batch != input.shape[0]:
+        raise ValueError("'input' and 'grid_ndc' have to have the same batch size.")
+    if input.ndim != 4:
+        raise ValueError("'input' has to be a 4-dimensional Tensor.")
+    if pt_dim != 2:
+        raise ValueError("The last dimension of 'grid_ndc' has to be == 2.")
+
+    grid_ndc_flat = grid_ndc.reshape(batch, -1, 1, 2)
+
+    # pyre-fixme[6]: For 2nd param expected `Tuple[int, int]` but got `Size`.
+    grid_flat = ndc_to_grid_sample_coords(grid_ndc_flat, input.shape[2:])
+
+    sampled_input_flat = torch.nn.functional.grid_sample(
+        input, grid_flat, align_corners=align_corners, **grid_sample_kwargs
+    )
+
+    sampled_input = sampled_input_flat.reshape([batch, input.shape[1], *spatial_size])
+
+    return sampled_input
+
+
+def ndc_to_grid_sample_coords(
+    xy_ndc: torch.Tensor,
+    image_size_hw: Tuple[int, int],
+) -> torch.Tensor:
+    """
+    Convert from the PyTorch3D's NDC coordinates to
+    `torch.nn.functional.grid_sampler`'s coordinates.
+
+    Args:
+        xy_ndc: Tensor of shape `(..., 2)` containing 2D points in the
+            PyTorch3D's NDC coordinates.
+        image_size_hw: A tuple `(image_height, image_width)` denoting the
+            height and width of the image tensor to sample.
+    Returns:
+        xy_grid_sample: Tensor of shape `(..., 2)` containing 2D points in the
+            `torch.nn.functional.grid_sample` coordinates.
+    """
+    if len(image_size_hw) != 2 or any(s <= 0 for s in image_size_hw):
+        raise ValueError("'image_size_hw' has to be a 2-tuple of positive integers")
+    aspect = min(image_size_hw) / max(image_size_hw)
+    xy_grid_sample = -xy_ndc  # first negate the coords
+    if image_size_hw[0] >= image_size_hw[1]:
+        xy_grid_sample[..., 1] *= aspect
+    else:
+        xy_grid_sample[..., 0] *= aspect
+    return xy_grid_sample
+
+
+def parse_image_size(
+    image_size: Union[List[int], Tuple[int, int], int]
+) -> Tuple[int, int]:
+    """
+    Args:
+        image_size: A single int (for square images) or a tuple/list of two ints.
+
+    Returns:
+        A tuple of two ints.
+
+    Throws:
+        ValueError if got more than two ints, any negative numbers or non-ints.
+    """
+    if not isinstance(image_size, (tuple, list)):
+        return (image_size, image_size)
+    if len(image_size) != 2:
+        raise ValueError("Image size can only be a tuple/list of (H, W)")
+    if not all(i > 0 for i in image_size):
+        raise ValueError("Image sizes must be greater than 0; got %d, %d" % image_size)
+    if not all(type(i) == int for i in image_size):
+        raise ValueError("Image sizes must be integers; got %f, %f" % image_size)
+    return tuple(image_size)

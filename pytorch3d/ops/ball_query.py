@@ -1,4 +1,4 @@
-# Copyright (c) Facebook, Inc. and its affiliates.
+# Copyright (c) Meta Platforms, Inc. and affiliates.
 # All rights reserved.
 #
 # This source code is licensed under the BSD-style license found in the
@@ -43,8 +43,9 @@ class _ball_query(Function):
             p2 = p2.float()
 
         # Reuse the KNN backward function
+        # by default, norm is 2
         grad_p1, grad_p2 = _C.knn_points_backward(
-            p1, p2, lengths1, lengths2, idx, grad_dists
+            p1, p2, lengths1, lengths2, idx, 2, grad_dists
         )
         return grad_p1, grad_p2, None, None, None, None
 
@@ -131,7 +132,6 @@ def ball_query(
     if lengths2 is None:
         lengths2 = torch.full((N,), P2, dtype=torch.int64, device=p1.device)
 
-    # pyre-fixme[16]: `_ball_query` has no attribute `apply`.
     dists, idx = _ball_query.apply(p1, p2, lengths1, lengths2, K, radius)
 
     # Gather the neighbors if needed

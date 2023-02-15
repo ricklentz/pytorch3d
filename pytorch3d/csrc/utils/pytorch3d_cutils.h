@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  * All rights reserved.
  *
  * This source code is licensed under the BSD-style license found in the
@@ -15,6 +15,3 @@
 #define CHECK_CONTIGUOUS_CUDA(x) \
   CHECK_CUDA(x);                 \
   CHECK_CONTIGUOUS(x)
-
-// Max possible threads per block
-const int MAX_THREADS_PER_BLOCK = 1024;

@@ -1,4 +1,4 @@
-# Copyright (c) Facebook, Inc. and its affiliates.
+# Copyright (c) Meta Platforms, Inc. and affiliates.
 # All rights reserved.
 #
 # This source code is licensed under the BSD-style license found in the
@@ -13,16 +13,16 @@ This format is introduced, for example, at
 http://www.geomview.org/docs/html/OFF.html .
 """
 import warnings
-from typing import Optional, Tuple, Union, cast
+from typing import cast, Optional, Tuple, Union
 
 import numpy as np
 import torch
 from iopath.common.file_io import PathManager
-from pytorch3d.io.utils import PathOrStr, _check_faces_indices, _open_file
+from pytorch3d.io.utils import _check_faces_indices, _open_file, PathOrStr
 from pytorch3d.renderer import TexturesAtlas, TexturesVertex
 from pytorch3d.structures import Meshes
 
-from .pluggable_formats import MeshFormatInterpreter, endswith
+from .pluggable_formats import endswith, MeshFormatInterpreter
 
 
 def _is_line_empty(line: Union[str, bytes]) -> bool:
@@ -85,7 +85,7 @@ def _read_faces_lump(
         if n_faces > 1 and "Wrong number of columns" in e.args[0]:
             file.seek(old_offset)
             return None
-        raise ValueError("Not enough face data.")
+        raise ValueError("Not enough face data.") from None
 
     if len(data) != n_faces:
         raise ValueError("Not enough face data.")
@@ -247,11 +247,11 @@ def _load_off_stream(file) -> dict:
     try:
         n_verts = int(items[0])
     except ValueError:
-        raise ValueError("Invalid counts line: %s" % header)
+        raise ValueError("Invalid counts line: %s" % header) from None
     try:
         n_faces = int(items[1])
     except ValueError:
-        raise ValueError("Invalid counts line: %s" % header)
+        raise ValueError("Invalid counts line: %s" % header) from None
 
     if (len(items) > 3 and not items[3].startswith(b"#")) or n_verts < 0 or n_faces < 0:
         raise ValueError("Invalid counts line: %s" % header)

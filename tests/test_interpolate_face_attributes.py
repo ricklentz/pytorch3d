@@ -1,4 +1,4 @@
-# Copyright (c) Facebook, Inc. and its affiliates.
+# Copyright (c) Meta Platforms, Inc. and affiliates.
 # All rights reserved.
 #
 # This source code is licensed under the BSD-style license found in the
@@ -7,7 +7,6 @@
 import unittest
 
 import torch
-from common_testing import TestCaseMixin, get_random_cuda_device
 from pytorch3d.ops.interp_face_attrs import (
     interpolate_face_attributes,
     interpolate_face_attributes_python,
@@ -15,6 +14,8 @@ from pytorch3d.ops.interp_face_attrs import (
 from pytorch3d.renderer.mesh import TexturesVertex
 from pytorch3d.renderer.mesh.rasterizer import Fragments
 from pytorch3d.structures import Meshes
+
+from .common_testing import get_random_cuda_device, TestCaseMixin
 
 
 class TestInterpolateFaceAttributes(TestCaseMixin, unittest.TestCase):

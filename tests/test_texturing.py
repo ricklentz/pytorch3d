@@ -1,4 +1,4 @@
-# Copyright (c) Facebook, Inc. and its affiliates.
+# Copyright (c) Meta Platforms, Inc. and affiliates.
 # All rights reserved.
 #
 # This source code is licensed under the BSD-style license found in the
@@ -9,21 +9,22 @@ import unittest
 
 import torch
 import torch.nn.functional as F
-from common_testing import TestCaseMixin
 from pytorch3d.renderer.mesh.rasterizer import Fragments
 from pytorch3d.renderer.mesh.textures import (
+    _list_to_padded_wrapper,
     TexturesAtlas,
     TexturesUV,
     TexturesVertex,
-    _list_to_padded_wrapper,
 )
 from pytorch3d.renderer.mesh.utils import (
-    Rectangle,
     pack_rectangles,
     pack_unique_rectangles,
+    Rectangle,
 )
-from pytorch3d.structures import Meshes, list_to_packed, packed_to_list
-from test_meshes import init_mesh
+from pytorch3d.structures import list_to_packed, Meshes, packed_to_list
+
+from .common_testing import TestCaseMixin
+from .test_meshes import init_mesh
 
 
 def tryindex(self, index, tex, meshes, source):
@@ -130,7 +131,7 @@ class TestTexturesVertex(TestCaseMixin, unittest.TestCase):
         )
 
         # define TexturesVertex
-        verts_texture = torch.rand(verts.shape)
+        verts_texture = torch.rand(verts.shape, device=device)
         textures = TexturesVertex(verts_features=verts_texture)
 
         # compute packed faces
@@ -144,6 +145,53 @@ class TestTexturesVertex(TestCaseMixin, unittest.TestCase):
         faces_verts_texts_packed = verts_texts_packed[faces_packed]
 
         self.assertClose(faces_verts_texts_packed, faces_verts_texts)
+
+    def test_submeshes(self):
+        # define TexturesVertex
+        verts_features = torch.tensor(
+            [
+                [1, 0, 0],
+                [1, 0, 0],
+                [1, 0, 0],
+                [1, 0, 0],
+                [0, 1, 0],
+                [0, 1, 0],
+                [0, 1, 0],
+                [0, 1, 0],
+            ],
+            dtype=torch.float32,
+        )
+
+        textures = TexturesVertex(
+            verts_features=[verts_features, verts_features, verts_features]
+        )
+        subtextures = textures.submeshes(
+            [
+                [
+                    torch.LongTensor([0, 2, 3]),
+                    torch.LongTensor(list(range(8))),
+                ],
+                [],
+                [
+                    torch.LongTensor([4]),
+                ],
+            ],
+            None,
+        )
+
+        subtextures_features = subtextures.verts_features_list()
+
+        self.assertEqual(len(subtextures_features), 3)
+        self.assertTrue(
+            torch.equal(
+                subtextures_features[0],
+                torch.FloatTensor([[1, 0, 0], [1, 0, 0], [1, 0, 0]]),
+            )
+        )
+        self.assertTrue(torch.equal(subtextures_features[1], verts_features))
+        self.assertTrue(
+            torch.equal(subtextures_features[2], torch.FloatTensor([[0, 1, 0]]))
+        )
 
     def test_clone(self):
         tex = TexturesVertex(verts_features=torch.rand(size=(10, 100, 128)))

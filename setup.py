@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-# Copyright (c) Facebook, Inc. and its affiliates.
+# Copyright (c) Meta Platforms, Inc. and affiliates.
 # All rights reserved.
 #
 # This source code is licensed under the BSD-style license found in the
@@ -8,12 +8,13 @@
 import glob
 import os
 import runpy
+import sys
 import warnings
 from typing import List, Optional
 
 import torch
 from setuptools import find_packages, setup
-from torch.utils.cpp_extension import CUDA_HOME, CppExtension, CUDAExtension
+from torch.utils.cpp_extension import CppExtension, CUDA_HOME, CUDAExtension
 
 
 def get_existing_ccbin(nvcc_args: List[str]) -> Optional[str]:
@@ -35,6 +36,13 @@ def get_existing_ccbin(nvcc_args: List[str]) -> Optional[str]:
 
 
 def get_extensions():
+    no_extension = os.getenv("PYTORCH3D_NO_EXTENSION", "0") == "1"
+    if no_extension:
+        msg = "SKIPPING EXTENSION BUILD. PYTORCH3D WILL NOT WORK!"
+        print(msg, file=sys.stderr)
+        warnings.warn(msg)
+        return []
+
     this_dir = os.path.dirname(os.path.abspath(__file__))
     extensions_dir = os.path.join(this_dir, "pytorch3d", "csrc")
     sources = glob.glob(os.path.join(extensions_dir, "**", "*.cpp"), recursive=True)
@@ -46,7 +54,10 @@ def get_extensions():
     include_dirs = [extensions_dir]
 
     force_cuda = os.getenv("FORCE_CUDA", "0") == "1"
-    if (torch.cuda.is_available() and CUDA_HOME is not None) or force_cuda:
+    force_no_cuda = os.getenv("PYTORCH3D_FORCE_NO_CUDA", "0") == "1"
+    if (
+        not force_no_cuda and torch.cuda.is_available() and CUDA_HOME is not None
+    ) or force_cuda:
         extension = CUDAExtension
         sources += source_cuda
         define_macros += [("WITH_CUDA", None)]
@@ -57,12 +68,13 @@ def get_extensions():
         define_macros += [("THRUST_IGNORE_CUB_VERSION_CHECK", None)]
         cub_home = os.environ.get("CUB_HOME", None)
         nvcc_args = [
-            "-std=c++14",
             "-DCUDA_HAS_FP16=1",
             "-D__CUDA_NO_HALF_OPERATORS__",
             "-D__CUDA_NO_HALF_CONVERSIONS__",
             "-D__CUDA_NO_HALF2_OPERATORS__",
         ]
+        if os.name != "nt":
+            nvcc_args.append("-std=c++14")
         if cub_home is None:
             prefix = os.environ.get("CONDA_PREFIX", None)
             if prefix is not None and os.path.isdir(prefix + "/include/cub"):
@@ -124,10 +136,10 @@ if os.getenv("PYTORCH3D_NO_NINJA", "0") == "1":
         def __init__(self, *args, **kwargs):
             super().__init__(use_ninja=False, *args, **kwargs)
 
-
 else:
     BuildExtension = torch.utils.cpp_extension.BuildExtension
 
+trainer = "pytorch3d.implicitron_trainer"
 
 setup(
     name="pytorch3d",
@@ -138,11 +150,27 @@ setup(
     "for deep Learning with 3D data.",
     packages=find_packages(
         exclude=("configs", "tests", "tests.*", "docs.*", "projects.*")
-    ),
+    )
+    + [trainer],
+    package_dir={trainer: "projects/implicitron_trainer"},
     install_requires=["fvcore", "iopath"],
     extras_require={
         "all": ["matplotlib", "tqdm>4.29.0", "imageio", "ipywidgets"],
-        "dev": ["flake8", "isort", "black==19.3b0"],
+        "dev": ["flake8", "usort"],
+        "implicitron": [
+            "hydra-core>=1.1",
+            "visdom",
+            "lpips",
+            "tqdm>4.29.0",
+            "matplotlib",
+            "accelerate",
+        ],
+    },
+    entry_points={
+        "console_scripts": [
+            f"pytorch3d_implicitron_runner={trainer}.experiment:experiment",
+            f"pytorch3d_implicitron_visualizer={trainer}.visualize_reconstruction:main",
+        ]
     },
     ext_modules=get_extensions(),
     cmdclass={"build_ext": BuildExtension},

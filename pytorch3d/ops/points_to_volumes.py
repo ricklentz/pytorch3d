@@ -1,10 +1,10 @@
-# Copyright (c) Facebook, Inc. and its affiliates.
+# Copyright (c) Meta Platforms, Inc. and affiliates.
 # All rights reserved.
 #
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
-from typing import TYPE_CHECKING, Optional, Tuple
+from typing import Optional, Tuple, TYPE_CHECKING
 
 import torch
 from pytorch3d import _C
@@ -183,7 +183,6 @@ class _points_to_volumes_function(Function):
         )
 
 
-# pyre-fixme[16]: `_points_to_volumes_function` has no attribute `apply`.
 _points_to_volumes = _points_to_volumes_function.apply
 
 
@@ -192,6 +191,7 @@ def add_pointclouds_to_volumes(
     initial_volumes: "Volumes",
     mode: str = "trilinear",
     min_weight: float = 1e-4,
+    rescale_features: bool = True,
     _python: bool = False,
 ) -> "Volumes":
     """
@@ -207,8 +207,8 @@ def add_pointclouds_to_volumes(
     of `initial_volumes` with its `features` and `densities` updated with the
     result of the pointcloud addition.
 
-    Example:
-        ```
+    Example::
+
         # init a random point cloud
         pointclouds = Pointclouds(
             points=torch.randn(4, 100, 3), features=torch.rand(4, 100, 5)
@@ -228,7 +228,6 @@ def add_pointclouds_to_volumes(
             initial_volumes=initial_volumes,
             mode="trilinear",
         )
-        ```
 
     Args:
         pointclouds: Batch of 3D pointclouds represented with a `Pointclouds`
@@ -250,6 +249,10 @@ def add_pointclouds_to_volumes(
         min_weight: A scalar controlling the lowest possible total per-voxel
             weight used to normalize the features accumulated in a voxel.
             Only active for `mode==trilinear`.
+        rescale_features: If False, output features are just the sum of input and
+                            added points. If True, they are averaged. In both cases,
+                            output densities are just summed without rescaling, so
+                            you may need to rescale them afterwards.
         _python: Set to True to use a pure Python implementation, e.g. for test
             purposes, which requires more memory and may be slower.
 
@@ -271,6 +274,7 @@ def add_pointclouds_to_volumes(
 
     # obtain the conversion mask
     n_per_pcl = pointclouds.num_points_per_cloud().type_as(pcl_feats)
+    # pyre-fixme[6]: For 1st param expected `Union[bool, float, int]` but got `Tensor`.
     mask = torch.arange(n_per_pcl.max(), dtype=pcl_feats.dtype, device=pcl_feats.device)
     mask = (mask[None, :] < n_per_pcl[:, None]).type_as(mask)
 
@@ -286,6 +290,7 @@ def add_pointclouds_to_volumes(
         grid_sizes=initial_volumes.get_grid_sizes(),
         mask=mask,
         mode=mode,
+        rescale_features=rescale_features,
         _python=_python,
     )
 
@@ -303,6 +308,7 @@ def add_points_features_to_volume_densities_features(
     min_weight: float = 1e-4,
     mask: Optional[torch.Tensor] = None,
     grid_sizes: Optional[torch.LongTensor] = None,
+    rescale_features: bool = True,
     _python: bool = False,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     """
@@ -345,6 +351,10 @@ def add_points_features_to_volume_densities_features(
         grid_sizes: `LongTensor` of shape (minibatch, 3) representing the
             spatial resolutions of each of the the non-flattened `volumes` tensors,
             or None to indicate the whole volume is used for every batch element.
+        rescale_features: If False, output features are just the sum of input and
+                            added points. If True, they are averaged. In both cases,
+                            output densities are just summed without rescaling, so
+                            you may need to rescale them afterwards.
         _python: Set to True to use a pure Python implementation.
     Returns:
         volume_features: Output volume of shape `(minibatch, feature_dim, D, H, W)`
@@ -377,6 +387,7 @@ def add_points_features_to_volume_densities_features(
             mode=mode,
             min_weight=min_weight,
             mask=mask,
+            # pyre-fixme[6]: For 8th param expected `LongTensor` but got `Tensor`.
             grid_sizes=grid_sizes,
         )
 
@@ -401,12 +412,13 @@ def add_points_features_to_volume_densities_features(
         True,  # align_corners
         splat,
     )
-    if splat:
+
+    if rescale_features:
         # divide each feature by the total weight of the votes
-        volume_features = volume_features / volume_densities.clamp(min_weight)
-    else:
-        # divide each feature by the total weight of the votes
-        volume_features = volume_features / volume_densities.clamp(1.0)
+        if splat:
+            volume_features = volume_features / volume_densities.clamp(min_weight)
+        else:
+            volume_features = volume_features / volume_densities.clamp(1.0)
 
     return volume_features, volume_densities
 
@@ -479,7 +491,7 @@ def _check_points_to_volumes_inputs(
     volume_features: torch.Tensor,
     grid_sizes: torch.LongTensor,
     mask: Optional[torch.Tensor] = None,
-):
+) -> None:
 
     max_grid_size = grid_sizes.max(dim=0).values
     if torch.prod(max_grid_size) > volume_densities.shape[1]:
@@ -583,7 +595,6 @@ def _splat_points_to_volumes(
     rX, rY, rZ = rXYZ.split(1, dim=2)
 
     # get random indices for the purpose of adding out-of-bounds values
-    # pyre-fixme[16]: `Tensor` has no attribute `new_zeros`.
     rand_idx = X.new_zeros(X.shape).random_(0, n_voxels)
 
     # iterate over the x, y, z indices of the 8-neighborhood (xdiff, ydiff, zdiff)
@@ -623,7 +634,6 @@ def _splat_points_to_volumes(
 
                 # scatter add casts the votes into the weight accumulator
                 # and the feature accumulator
-                # pyre-fixme[16]: `Tensor` has no attribute `scatter_add_`.
                 volume_densities.scatter_add_(1, idx_valid, w_valid)
 
                 # reshape idx_valid -> (minibatch, feature_dim, n_points)
@@ -707,6 +717,7 @@ def _round_points_to_volumes(
     X, Y, Z = XYZ.split(1, dim=2)
 
     # valid - binary indicators of votes that fall into the volume
+    # pyre-fixme[9]: grid_sizes has type `LongTensor`; used as `Tensor`.
     grid_sizes = grid_sizes.type_as(XYZ)
     valid = (
         (0 <= X)
@@ -731,7 +742,6 @@ def _round_points_to_volumes(
 
     # scatter add casts the votes into the weight accumulator
     # and the feature accumulator
-    # pyre-fixme[16]: `Tensor` has no attribute `scatter_add_`.
     volume_densities.scatter_add_(1, idx_valid, w_valid)
 
     # reshape idx_valid -> (minibatch, feature_dim, n_points)

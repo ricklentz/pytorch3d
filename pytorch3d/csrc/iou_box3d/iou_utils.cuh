@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  * All rights reserved.
  *
  * This source code is licensed under the BSD-style license found in the
@@ -12,7 +12,15 @@
 #include <cstdio>
 #include "utils/float_math.cuh"
 
-__constant__ const float kEpsilon = 1e-4;
+// dEpsilon: Used in dot products and is used to assess whether two unit vectors
+// are orthogonal (or coplanar). It's an epsilon on cos(θ).
+// With dEpsilon = 0.001, two unit vectors are considered co-planar
+// if their θ = 2.5 deg.
+__constant__ const float dEpsilon = 1e-3;
+// aEpsilon: Used once in main function to check for small face areas
+__constant__ const float aEpsilon = 1e-4;
+// kEpsilon: Used only for norm(u) = u/max(||u||, kEpsilon)
+__constant__ const float kEpsilon = 1e-8;
 
 /*
 _PLANES and _TRIS define the 4- and 3-connectivity
@@ -31,25 +39,25 @@ const int MAX_TRIS = 100;
 // We will use struct arrays for representing
 // the data for each box and intersecting
 // triangles
-typedef struct {
+struct FaceVerts {
   float3 v0;
   float3 v1;
   float3 v2;
   float3 v3; // Can be empty for triangles
-} FaceVerts;
+};
 
-typedef struct {
+struct FaceVertsIdx {
   int v0;
   int v1;
   int v2;
   int v3; // Can be empty for triangles
-} FaceVertsIdx;
+};
 
 // This is used when deciding which faces to
 // keep that are not coplanar
-typedef struct {
+struct Keep {
   bool keep;
-} Keep;
+};
 
 __device__ FaceVertsIdx _PLANES[] = {
     {0, 1, 2, 3},
@@ -120,26 +128,86 @@ __device__ inline void GetBoxPlanes(
   }
 }
 
-// The normal of the face defined by vertices (v0, v1, v2)
-// Define e0 to be the edge connecting (v1, v0)
-// Define e1 to be the edge connecting (v2, v0)
-// normal is the cross product of e0, e1
+// The geometric center of a list of vertices.
 //
 // Args
-//    v0, v1, v2: float3 coordinates of the vertices of the face
+//    vertices: A list of float3 vertices {v0, ..., vN}.
 //
 // Returns
-//    float3: normal for the face
+//    float3: Geometric center of the vertices.
 //
-__device__ inline float3
-FaceNormal(const float3 v0, const float3 v1, const float3 v2) {
-  float3 n = cross(v1 - v0, v2 - v0);
-  n = n / fmaxf(norm(n), kEpsilon);
+__device__ inline float3 FaceCenter(
+    std::initializer_list<const float3> vertices) {
+  auto sumVertices = float3{};
+  for (const auto& vertex : vertices) {
+    sumVertices = sumVertices + vertex;
+  }
+  return sumVertices / vertices.size();
+}
+
+// The normal of a plane spanned by vectors e0 and e1
+//
+// Args
+//    e0, e1: float3 vectors defining a plane
+//
+// Returns
+//    float3: normal of the plane
+//
+__device__ inline float3 GetNormal(const float3 e0, const float3 e1) {
+  float3 n = cross(e0, e1);
+  n = n / std::fmaxf(norm(n), kEpsilon);
   return n;
 }
 
-// The normal of a box plane defined by the verts in `plane` with
-// the centroid of the box given by `center`.
+// The normal of a face with vertices (v0, v1, v2) or (v0, ..., v3).
+// We find the "best" edges connecting the face center to the vertices,
+// such that the cross product between the edges is maximized.
+//
+// Args
+//    vertices: a list of float3 coordinates of the vertices.
+//
+// Returns
+//    float3: center of the plane
+//
+__device__ inline float3 FaceNormal(
+    std::initializer_list<const float3> vertices) {
+  const auto faceCenter = FaceCenter(vertices);
+  auto normal = float3();
+  auto maxDist = -1;
+  for (auto v1 = vertices.begin(); v1 != vertices.end() - 1; ++v1) {
+    for (auto v2 = v1 + 1; v2 != vertices.end(); ++v2) {
+      const auto v1ToCenter = *v1 - faceCenter;
+      const auto v2ToCenter = *v2 - faceCenter;
+      const auto dist = norm(cross(v1ToCenter, v2ToCenter));
+      if (dist > maxDist) {
+        normal = GetNormal(v1ToCenter, v2ToCenter);
+        maxDist = dist;
+      }
+    }
+  }
+  return normal;
+}
+
+// The area of the face defined by vertices (v0, v1, v2)
+// Define e0 to be the edge connecting (v1, v0)
+// Define e1 to be the edge connecting (v2, v0)
+// Area is the norm of the cross product of e0, e1 divided by 2.0
+//
+// Args
+//    tri: FaceVerts of float3 coordinates of the vertices of the face
+//
+// Returns
+//    float: area for the face
+//
+__device__ inline float FaceArea(const FaceVerts& tri) {
+  // Get verts for face 1
+  const float3 n = cross(tri.v1 - tri.v0, tri.v2 - tri.v0);
+  return norm(n) / 2.0;
+}
+
+// The normal of a box plane defined by the verts in `plane` such that it
+// points toward the centroid of the box given by `center`.
+//
 // Args
 //    plane: float3 coordinates of the vertices of the plane
 //    center: float3 coordinates of the center of the box from
@@ -153,23 +221,25 @@ template <typename FaceVertsPlane>
 __device__ inline float3 PlaneNormalDirection(
     const FaceVertsPlane& plane,
     const float3& center) {
-  // Only need the first 3 verts of the plane
-  const float3 v0 = plane.v0;
-  const float3 v1 = plane.v1;
-  const float3 v2 = plane.v2;
+  // The plane's center
+  const float3 plane_center =
+      FaceCenter({plane.v0, plane.v1, plane.v2, plane.v3});
 
-  // We project the center on the plane defined by (v0, v1, v2)
-  // We can write center = v0 + a * e0 + b * e1 + c * n
+  // The plane's normal
+  float3 n = FaceNormal({plane.v0, plane.v1, plane.v2, plane.v3});
+
+  // We project the center on the plane defined by (v0, v1, v2, v3)
+  // We can write center = plane_center + a * e0 + b * e1 + c * n
   // We know that <e0, n> = 0 and <e1, n> = 0 and
   // <a, b> is the dot product between a and b.
   // This means we can solve for c as:
-  // c = <center - v0 - a * e0 - b * e1, n> = <center - v0, n>
-  float3 n = FaceNormal(v0, v1, v2);
-  const float c = dot((center - v0), n);
+  // c = <center - plane_center - a * e0 - b * e1, n>
+  //   = <center - plane_center, n>
+  const float c = dot((center - plane_center), n);
 
   // If c is negative, then we revert the direction of n such that n
   // points "inside"
-  if (c < kEpsilon) {
+  if (c < 0.0f) {
     n = -1.0f * n;
   }
 
@@ -298,16 +368,16 @@ __device__ inline float3 PolyhedronCenter(
 //
 __device__ inline bool
 IsInside(const FaceVerts& plane, const float3& normal, const float3& point) {
-  // Get one vert of the plane
-  const float3 v0 = plane.v0;
+  // The center of the plane
+  const float3 plane_ctr = FaceCenter({plane.v0, plane.v1, plane.v2, plane.v3});
 
-  // Every point p can be written as p = v0 + a e0 + b e1 + c n
+  // Every point p can be written as p = plane_ctr + a e0 + b e1 + c n
   // Solving for c:
-  // c = (point - v0 - a * e0 - b * e1).dot(n)
+  // c = (point - plane_ctr - a * e0 - b * e1).dot(n)
   // We know that <e0, n> = 0 and <e1, n> = 0
   // So the calculation can be simplified as:
-  const float c = dot((point - v0), normal);
-  const bool inside = c > -1.0f * kEpsilon;
+  const float c = dot((point - plane_ctr), normal);
+  const bool inside = c >= 0.0f;
   return inside;
 }
 
@@ -328,18 +398,127 @@ __device__ inline float3 PlaneEdgeIntersection(
     const float3& normal,
     const float3& p0,
     const float3& p1) {
-  // Get one vert of the plane
-  const float3 v0 = plane.v0;
+  // The center of the plane
+  const float3 plane_ctr = FaceCenter({plane.v0, plane.v1, plane.v2, plane.v3});
 
   // The point of intersection can be parametrized
   // p = p0 + a (p1 - p0) where a in [0, 1]
   // We want to find a such that p is on plane
-  // <p - v0, n> = 0
-  const float top = dot(-1.0f * (p0 - v0), normal);
-  const float bot = dot(p1 - p0, normal);
-  const float a = top / bot;
-  const float3 p = p0 + a * (p1 - p0);
+  // <p - plane_ctr, n> = 0
+
+  float3 direc = p1 - p0;
+  direc = direc / fmaxf(norm(direc), kEpsilon);
+
+  float3 p = (p1 + p0) / 2.0f;
+
+  if (abs(dot(direc, normal)) >= dEpsilon) {
+    const float top = -1.0f * dot(p0 - plane_ctr, normal);
+    const float bot = dot(p1 - p0, normal);
+    const float a = top / bot;
+    p = p0 + a * (p1 - p0);
+  }
+
   return p;
+}
+
+// Compute the most distant points between two sets of vertices
+//
+// Args
+//    verts1, verts2: list of float3 defining the list of vertices
+//
+// Returns
+//    v1m, v2m: float3 vectors of the most distant points
+//          in verts1 and verts2 respectively
+//
+__device__ inline std::tuple<float3, float3> ArgMaxVerts(
+    std::initializer_list<float3> verts1,
+    std::initializer_list<float3> verts2) {
+  auto v1m = float3();
+  auto v2m = float3();
+  float maxdist = -1.0f;
+
+  for (const auto& v1 : verts1) {
+    for (const auto& v2 : verts2) {
+      if (norm(v1 - v2) > maxdist) {
+        v1m = v1;
+        v2m = v2;
+        maxdist = norm(v1 - v2);
+      }
+    }
+  }
+  return std::make_tuple(v1m, v2m);
+}
+
+// Compute a boolean indicator for whether or not two faces
+// are coplanar
+//
+// Args
+//    tri1, tri2: FaceVerts struct of the vertex coordinates of
+//       the triangle face
+//
+// Returns
+//    bool: whether or not the two faces are coplanar
+//
+__device__ inline bool IsCoplanarTriTri(
+    const FaceVerts& tri1,
+    const FaceVerts& tri2) {
+  const float3 tri1_ctr = FaceCenter({tri1.v0, tri1.v1, tri1.v2});
+  const float3 tri1_n = FaceNormal({tri1.v0, tri1.v1, tri1.v2});
+
+  const float3 tri2_ctr = FaceCenter({tri2.v0, tri2.v1, tri2.v2});
+  const float3 tri2_n = FaceNormal({tri2.v0, tri2.v1, tri2.v2});
+
+  // Check if parallel
+  const bool check1 = abs(dot(tri1_n, tri2_n)) > 1 - dEpsilon;
+
+  // Compute most distant points
+  const auto v1mAndv2m =
+      ArgMaxVerts({tri1.v0, tri1.v1, tri1.v2}, {tri2.v0, tri2.v1, tri2.v2});
+  const auto v1m = std::get<0>(v1mAndv2m);
+  const auto v2m = std::get<1>(v1mAndv2m);
+
+  float3 n12m = v1m - v2m;
+  n12m = n12m / fmaxf(norm(n12m), kEpsilon);
+
+  const bool check2 = (abs(dot(n12m, tri1_n)) < dEpsilon) ||
+      (abs(dot(n12m, tri2_n)) < dEpsilon);
+
+  return (check1 && check2);
+}
+
+// Compute a boolean indicator for whether or not a triangular and a planar
+// face are coplanar
+//
+// Args
+//    tri, plane: FaceVerts struct of the vertex coordinates of
+//       the triangle and planar face
+//  normal: the normal direction of the plane pointing "inside"
+//
+// Returns
+//    bool: whether or not the two faces are coplanar
+//
+__device__ inline bool IsCoplanarTriPlane(
+    const FaceVerts& tri,
+    const FaceVerts& plane,
+    const float3& normal) {
+  const float3 tri_ctr = FaceCenter({tri.v0, tri.v1, tri.v2});
+  const float3 nt = FaceNormal({tri.v0, tri.v1, tri.v2});
+
+  // check if parallel
+  const bool check1 = abs(dot(nt, normal)) > 1 - dEpsilon;
+
+  // Compute most distant points
+  const auto v1mAndv2m = ArgMaxVerts(
+      {tri.v0, tri.v1, tri.v2}, {plane.v0, plane.v1, plane.v2, plane.v3});
+  const auto v1m = std::get<0>(v1mAndv2m);
+  const auto v2m = std::get<1>(v1mAndv2m);
+
+  float3 n12m = v1m - v2m;
+  n12m = n12m / fmaxf(norm(n12m), kEpsilon);
+
+  const bool check2 = abs(dot(n12m, normal)) < dEpsilon;
+
+  return (check1 && check2);
 }
 
 // Triangle is clipped into a quadrilateral
@@ -457,6 +636,14 @@ __device__ inline int ClipTriByPlane(
   const bool isin1 = IsInside(plane, normal, v1);
   const bool isin2 = IsInside(plane, normal, v2);
 
+  // Check coplanar
+  const bool iscoplanar = IsCoplanarTriPlane(tri, plane, normal);
+  if (iscoplanar) {
+    // Return input vertices
+    face_verts_out[0] = {v0, v1, v2};
+    return 1;
+  }
+
   // All in
   if (isin0 && isin1 && isin2) {
     // Return input vertices
@@ -493,40 +680,6 @@ __device__ inline int ClipTriByPlane(
 
   // Else return empty (should not be reached)
   return 0;
-}
-
-// Compute a boolean indicator for whether or not two faces
-// are coplanar
-//
-// Args
-//    tri1, tri2: FaceVerts struct of the vertex coordinates of
-//       the triangle face
-//
-// Returns
-//    bool: whether or not the two faces are coplanar
-//
-__device__ inline bool IsCoplanarFace(
-    const FaceVerts& tri1,
-    const FaceVerts& tri2) {
-  // Get verts for face 1
-  const float3 v0 = tri1.v0;
-  const float3 v1 = tri1.v1;
-  const float3 v2 = tri1.v2;
-
-  const float3 n1 = FaceNormal(v0, v1, v2);
-  int coplanar_count = 0;
-
-  // Check v0, v1, v2
-  if (abs(dot(tri2.v0 - v0, n1)) < kEpsilon) {
-    coplanar_count++;
-  }
-  if (abs(dot(tri2.v1 - v0, n1)) < kEpsilon) {
-    coplanar_count++;
-  }
-  if (abs(dot(tri2.v2 - v0, n1)) < kEpsilon) {
-    coplanar_count++;
-  }
-  return (coplanar_count == 3);
 }
 
 // Get the triangles from each box which are part of the

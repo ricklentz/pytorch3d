@@ -1,10 +1,9 @@
-# Copyright (c) Facebook, Inc. and its affiliates.
+# Copyright (c) Meta Platforms, Inc. and affiliates.
 # All rights reserved.
 #
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
-import warnings
 from typing import List, Optional, Tuple, Union
 
 import torch
@@ -35,7 +34,7 @@ class AlphaCompositor(nn.Module):
 
         # images are of shape (N, C, H, W)
         # check for background color & feature size C (C=4 indicates rgba)
-        if background_color is not None and images.shape[1] == 4:
+        if background_color is not None:
             return _add_background_color_to_images(fragments, images, background_color)
         return images
 
@@ -57,7 +56,7 @@ class NormWeightedCompositor(nn.Module):
 
         # images are of shape (N, C, H, W)
         # check for background color & feature size C (C=4 indicates rgba)
-        if background_color is not None and images.shape[1] == 4:
+        if background_color is not None:
             return _add_background_color_to_images(fragments, images, background_color)
         return images
 
@@ -85,26 +84,29 @@ def _add_background_color_to_images(pix_idxs, images, background_color):
     if not torch.is_tensor(background_color):
         background_color = images.new_tensor(background_color)
 
-    background_shape = background_color.shape
+    if background_color.ndim == 0:
+        background_color = background_color.expand(images.shape[1])
 
-    if len(background_shape) != 1 or background_shape[0] not in (3, 4):
-        warnings.warn(
-            "Background color should be size (3) or (4), but is size %s instead"
-            % (background_shape,)
-        )
-        return images
+    if background_color.ndim > 1:
+        raise ValueError("Wrong shape of background_color")
 
     background_color = background_color.to(images)
 
-    # add alpha channel
-    if background_shape[0] == 3:
+    # add alpha channel if needed
+    if background_color.shape[0] + 1 == images.shape[1]:
         alpha = images.new_ones(1)
         background_color = torch.cat([background_color, alpha])
+
+    if images.shape[1] != background_color.shape[0]:
+        raise ValueError(
+            "Background color has %s channels not %s"
+            % (background_color.shape[0], images.shape[1])
+        )
 
     num_background_pixels = background_mask.sum()
 
     # permute so that features are the last dimension for masked_scatter to work
-    masked_images = images.permute(0, 2, 3, 1)[..., :4].masked_scatter(
+    masked_images = images.permute(0, 2, 3, 1).masked_scatter(
         background_mask[..., None],
         background_color[None, :].expand(num_background_pixels, -1),
     )

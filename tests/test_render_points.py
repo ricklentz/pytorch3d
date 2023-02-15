@@ -1,4 +1,4 @@
-# Copyright (c) Facebook, Inc. and its affiliates.
+# Copyright (c) Meta Platforms, Inc. and affiliates.
 # All rights reserved.
 #
 # This source code is licensed under the BSD-style license found in the
@@ -14,21 +14,16 @@ from os import path
 
 import numpy as np
 import torch
-from common_testing import (
-    TestCaseMixin,
-    get_pytorch3d_dir,
-    get_tests_dir,
-    load_rgb_image,
-)
 from PIL import Image
 from pytorch3d.renderer.cameras import (
     FoVOrthographicCameras,
     FoVPerspectiveCameras,
+    look_at_view_transform,
     OrthographicCameras,
     PerspectiveCameras,
-    look_at_view_transform,
 )
 from pytorch3d.renderer.compositing import alpha_composite, norm_weighted_sum
+from pytorch3d.renderer.fisheyecameras import FishEyeCameras
 from pytorch3d.renderer.points import (
     AlphaCompositor,
     NormWeightedCompositor,
@@ -39,6 +34,13 @@ from pytorch3d.renderer.points import (
 )
 from pytorch3d.structures.pointclouds import Pointclouds
 from pytorch3d.utils.ico_sphere import ico_sphere
+
+from .common_testing import (
+    get_pytorch3d_dir,
+    get_tests_dir,
+    load_rgb_image,
+    TestCaseMixin,
+)
 
 
 # If DEBUG=True, save out images generated in the tests for debugging.
@@ -69,6 +71,49 @@ class TestRenderPoints(TestCaseMixin, unittest.TestCase):
 
         # Load reference image
         filename = "simple_pointcloud_sphere.png"
+        image_ref = load_rgb_image("test_%s" % filename, DATA_DIR)
+
+        for bin_size in [0, None]:
+            # Check both naive and coarse to fine produce the same output.
+            renderer.rasterizer.raster_settings.bin_size = bin_size
+            images = renderer(pointclouds)
+            rgb = images[0, ..., :3].squeeze().cpu()
+            if DEBUG:
+                filename = "DEBUG_%s" % filename
+                Image.fromarray((rgb.numpy() * 255).astype(np.uint8)).save(
+                    DATA_DIR / filename
+                )
+            self.assertClose(rgb, image_ref)
+
+    def test_simple_sphere_fisheye(self):
+        device = torch.device("cuda:0")
+        sphere_mesh = ico_sphere(1, device)
+        verts_padded = sphere_mesh.verts_padded()
+        # Shift vertices to check coordinate frames are correct.
+        verts_padded[..., 1] += 0.2
+        verts_padded[..., 0] += 0.2
+        pointclouds = Pointclouds(
+            points=verts_padded, features=torch.ones_like(verts_padded)
+        )
+        R, T = look_at_view_transform(2.7, 0.0, 0.0)
+        cameras = FishEyeCameras(
+            device=device,
+            R=R,
+            T=T,
+            use_radial=False,
+            use_tangential=False,
+            use_thin_prism=False,
+            world_coordinates=True,
+        )
+        raster_settings = PointsRasterizationSettings(
+            image_size=256, radius=5e-2, points_per_pixel=1
+        )
+        rasterizer = PointsRasterizer(cameras=cameras, raster_settings=raster_settings)
+        compositor = NormWeightedCompositor()
+        renderer = PointsRenderer(rasterizer=rasterizer, compositor=compositor)
+
+        # Load reference image
+        filename = "render_fisheye_sphere_points.png"
         image_ref = load_rgb_image("test_%s" % filename, DATA_DIR)
 
         for bin_size in [0, None]:
@@ -326,7 +371,7 @@ class TestRenderPoints(TestCaseMixin, unittest.TestCase):
                 )
             self.assertClose(rgb, image_ref)
 
-    def test_compositor_background_color(self):
+    def test_compositor_background_color_rgba(self):
 
         N, H, W, K, C, P = 1, 15, 15, 20, 4, 225
         ptclds = torch.randn((C, P))
@@ -357,7 +402,7 @@ class TestRenderPoints(TestCaseMixin, unittest.TestCase):
                 torch.masked_select(images, is_foreground[:, None]),
             )
 
-            is_background = ~is_foreground[..., None].expand(-1, -1, -1, 4)
+            is_background = ~is_foreground[..., None].expand(-1, -1, -1, C)
 
             # permute masked_images to correctly get rgb values
             masked_images = masked_images.permute(0, 2, 3, 1)
@@ -367,12 +412,58 @@ class TestRenderPoints(TestCaseMixin, unittest.TestCase):
                 # check if background colors are properly changed
                 self.assertTrue(
                     masked_images[is_background]
-                    .view(-1, 4)[..., i]
+                    .view(-1, C)[..., i]
                     .eq(channel_color)
                     .all()
                 )
 
             # check background color alpha values
             self.assertTrue(
-                masked_images[is_background].view(-1, 4)[..., 3].eq(1).all()
+                masked_images[is_background].view(-1, C)[..., 3].eq(1).all()
             )
+
+    def test_compositor_background_color_rgb(self):
+
+        N, H, W, K, C, P = 1, 15, 15, 20, 3, 225
+        ptclds = torch.randn((C, P))
+        alphas = torch.rand((N, K, H, W))
+        pix_idxs = torch.randint(-1, 20, (N, K, H, W))  # 20 < P, large amount of -1
+        background_color = [0.5, 0, 1]
+
+        compositor_funcs = [
+            (NormWeightedCompositor, norm_weighted_sum),
+            (AlphaCompositor, alpha_composite),
+        ]
+
+        for (compositor_class, composite_func) in compositor_funcs:
+
+            compositor = compositor_class(background_color)
+
+            # run the forward method to generate masked images
+            masked_images = compositor.forward(pix_idxs, alphas, ptclds)
+
+            # generate unmasked images for testing purposes
+            images = composite_func(pix_idxs, alphas, ptclds)
+
+            is_foreground = pix_idxs[:, 0] >= 0
+
+            # make sure foreground values are unchanged
+            self.assertClose(
+                torch.masked_select(masked_images, is_foreground[:, None]),
+                torch.masked_select(images, is_foreground[:, None]),
+            )
+
+            is_background = ~is_foreground[..., None].expand(-1, -1, -1, C)
+
+            # permute masked_images to correctly get rgb values
+            masked_images = masked_images.permute(0, 2, 3, 1)
+            for i in range(3):
+                channel_color = background_color[i]
+
+                # check if background colors are properly changed
+                self.assertTrue(
+                    masked_images[is_background]
+                    .view(-1, C)[..., i]
+                    .eq(channel_color)
+                    .all()
+                )

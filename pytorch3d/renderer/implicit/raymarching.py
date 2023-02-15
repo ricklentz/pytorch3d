@@ -1,4 +1,4 @@
-# Copyright (c) Facebook, Inc. and its affiliates.
+# Copyright (c) Meta Platforms, Inc. and affiliates.
 # All rights reserved.
 #
 # This source code is licensed under the BSD-style license found in the
@@ -25,20 +25,20 @@ class EmissionAbsorptionRaymarcher(torch.nn.Module):
     (i.e. its density -> 1.0).
 
     EA first utilizes `rays_densities` to compute the absorption function
-    along each ray as follows:
-        ```
+    along each ray as follows::
+
         absorption = cumprod(1 - rays_densities, dim=-1)
-        ```
+
     The value of absorption at position `absorption[..., k]` specifies
     how much light has reached `k`-th point along a ray since starting
     its trajectory at `k=0`-th point.
 
     Each ray is then rendered into a tensor `features` of shape `(..., feature_dim)`
-    by taking a weighed combination of per-ray features `rays_features` as follows:
-        ```
+    by taking a weighed combination of per-ray features `rays_features` as follows::
+
         weights = absorption * rays_densities
         features = (rays_features * weights).sum(dim=-2)
-        ```
+
     Where `weights` denote a function that has a strong peak around the location
     of the first surface point that a given ray passes through.
 
@@ -158,11 +158,10 @@ class AbsorptionOnlyRaymarcher(torch.nn.Module):
         _check_density_bounds(rays_densities)
         total_transmission = torch.prod(1 - rays_densities, dim=-1, keepdim=True)
         opacities = 1.0 - total_transmission
-        # pyre-fixme[7]: Expected `Optional[torch.Tensor]` but got `float`.
         return opacities
 
 
-def _shifted_cumprod(x, shift=1):
+def _shifted_cumprod(x, shift: int = 1):
     """
     Computes `torch.cumprod(x, dim=-1)` and prepends `shift` number of
     ones and removes `shift` trailing elements to/from the last dimension
@@ -177,7 +176,7 @@ def _shifted_cumprod(x, shift=1):
 
 def _check_density_bounds(
     rays_densities: torch.Tensor, bounds: Tuple[float, float] = (0.0, 1.0)
-):
+) -> None:
     """
     Checks whether the elements of `rays_densities` range within `bounds`.
     If not issues a warning.
@@ -197,7 +196,7 @@ def _check_raymarcher_inputs(
     features_can_be_none: bool = False,
     z_can_be_none: bool = False,
     density_1d: bool = True,
-):
+) -> None:
     """
     Checks the validity of the inputs to raymarching algorithms.
     """
@@ -216,6 +215,7 @@ def _check_raymarcher_inputs(
     if density_1d and rays_densities.shape[-1] != 1:
         raise ValueError(
             "The size of the last dimension of rays_densities has to be one."
+            + f" Got shape {rays_densities.shape}."
         )
 
     rays_shape = rays_densities.shape[:-1]

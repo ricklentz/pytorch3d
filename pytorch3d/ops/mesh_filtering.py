@@ -1,4 +1,4 @@
-# Copyright (c) Facebook, Inc. and its affiliates.
+# Copyright (c) Meta Platforms, Inc. and affiliates.
 # All rights reserved.
 #
 # This source code is licensed under the BSD-style license found in the
@@ -49,7 +49,6 @@ def taubin_smoothing(
         total_weight = torch.sparse.sum(L, dim=1).to_dense().view(-1, 1)
         verts = (1 - lambd) * verts + lambd * torch.mm(L, verts) / total_weight
 
-        # pyre-ignore
         L = norm_laplacian(verts, edges)
         total_weight = torch.sparse.sum(L, dim=1).to_dense().view(-1, 1)
         verts = (1 - mu) * verts + mu * torch.mm(L, verts) / total_weight

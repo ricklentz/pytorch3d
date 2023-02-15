@@ -1,4 +1,4 @@
-# Copyright (c) Facebook, Inc. and its affiliates.
+# Copyright (c) Meta Platforms, Inc. and affiliates.
 # All rights reserved.
 #
 # This source code is licensed under the BSD-style license found in the
@@ -8,15 +8,16 @@ import unittest
 from math import radians
 
 import torch
-from common_testing import TestCaseMixin
 from pytorch3d.renderer.camera_utils import camera_to_eye_at_up, rotate_on_spot
 from pytorch3d.renderer.cameras import (
-    PerspectiveCameras,
     get_world_to_view_transform,
     look_at_view_transform,
+    PerspectiveCameras,
 )
 from pytorch3d.transforms import axis_angle_to_matrix
 from torch.nn.functional import normalize
+
+from .common_testing import TestCaseMixin
 
 
 def _batched_dotprod(x: torch.Tensor, y: torch.Tensor):

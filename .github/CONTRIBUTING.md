@@ -16,14 +16,13 @@ We do not always accept new features, and we take the following factors into con
 
 When sending a PR, please ensure you complete the following steps:
 
-1. Fork the repo and create your branch from `master`. Follow the instructions
+1. Fork the repo and create your branch from `main`. Follow the instructions
    in [INSTALL.md](../INSTALL.md) to build the repo.
 2. If you've added code that should be tested, add tests.
 3. If you've changed any APIs, please update the documentation.
-4. Ensure the test suite passes:
+4. Ensure the test suite passes, by running this from the project root:
     ```
-    cd pytorch3d/tests
-    python -m unittest -v
+    python -m unittest discover -v -s tests -t .
     ```
 5. Make sure your code lints by running `dev/linter.sh` from  the project root.
 6. If a PR contains multiple orthogonal changes, split it into multiple separate PRs.
@@ -46,7 +45,7 @@ outlined on that page and do not file a public issue.
 ## Coding Style
 We follow these [python](http://google.github.io/styleguide/pyguide.html) and [C++](https://google.github.io/styleguide/cppguide.html) style guides.
 
-For the linter to work, you will need to install `black`, `flake`, `isort` and `clang-format`, and
+For the linter to work, you will need to install `black`, `flake`, `usort` and `clang-format`, and
 they need to be fairly up to date.
 
 ## License

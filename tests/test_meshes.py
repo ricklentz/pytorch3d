@@ -1,4 +1,4 @@
-# Copyright (c) Facebook, Inc. and its affiliates.
+# Copyright (c) Meta Platforms, Inc. and affiliates.
 # All rights reserved.
 #
 # This source code is licensed under the BSD-style license found in the
@@ -10,8 +10,9 @@ import unittest
 
 import numpy as np
 import torch
-from common_testing import TestCaseMixin
 from pytorch3d.structures.meshes import Meshes
+
+from .common_testing import TestCaseMixin
 
 
 def init_mesh(
@@ -125,6 +126,152 @@ def init_simple_mesh(device: str = "cpu"):
         ),
     ]
     return Meshes(verts=verts, faces=faces)
+
+
+def mesh_structures_equal(mesh1, mesh2) -> bool:
+    """
+    Two meshes are equal if they have identical verts_list and faces_list.
+
+    Use to_sorted() before passing into this function to obtain meshes invariant to
+    vertex permutations. Note that this operator treats two geometrically identical
+    meshes as different if their vertices are in different coordinate frames.
+    """
+    if mesh1.__class__ != mesh1.__class__:
+        return False
+
+    if mesh1.textures is not None or mesh2.textures is not None:
+        raise NotImplementedError(
+            "mesh equality is not implemented for textured meshes."
+        )
+
+    if len(mesh1.verts_list()) != len(mesh2.verts_list()) or not all(
+        torch.equal(verts_mesh1, verts_mesh2)
+        for (verts_mesh1, verts_mesh2) in zip(mesh1.verts_list(), mesh2.verts_list())
+    ):
+        return False
+
+    if len(mesh1.faces_list()) != len(mesh2.faces_list()) or not all(
+        torch.equal(faces_mesh1, faces_mesh2)
+        for (faces_mesh1, faces_mesh2) in zip(mesh1.faces_list(), mesh2.faces_list())
+    ):
+        return False
+
+    if len(mesh1.verts_normals_list()) != len(mesh2.verts_normals_list()) or not all(
+        torch.equal(normals_mesh1, normals_mesh2)
+        for (normals_mesh1, normals_mesh2) in zip(
+            mesh1.verts_normals_list(), mesh2.verts_normals_list()
+        )
+    ):
+        return False
+
+    return True
+
+
+def to_sorted(mesh: Meshes) -> "Meshes":
+    """
+    Create a new Meshes object, where each sub-mesh's vertices are sorted
+    alphabetically.
+
+    Returns:
+        A Meshes object with the same topology as this mesh, with vertices sorted
+        alphabetically.
+
+    Example:
+
+    For a mesh with verts [[2.3, .2, .4], [.0, .1, .2], [.0, .0, .1]] and a single
+    face [[0, 1, 2]], to_sorted will create a new mesh with verts [[.0, .0, .1],
+    [.0, .1, .2], [2.3, .2, .4]] and a single face [[2, 1, 0]]. This is useful to
+    create a semi-canonical representation of the mesh that is invariant to vertex
+    permutations, but not invariant to coordinate frame changes.
+    """
+    if mesh.textures is not None:
+        raise NotImplementedError(
+            "to_sorted is not implemented for meshes with "
+            f"{type(mesh.textures).__name__} textures."
+        )
+
+    verts_list = mesh.verts_list()
+    faces_list = mesh.faces_list()
+    verts_sorted_list = []
+    faces_sorted_list = []
+
+    for verts, faces in zip(verts_list, faces_list):
+        # Argsort the vertices alphabetically: sort_ids[k] corresponds to the id of
+        # the vertex in the non-sorted mesh that should sit at index k in the sorted mesh.
+        sort_ids = torch.tensor(
+            [
+                idx_and_val[0]
+                for idx_and_val in sorted(
+                    enumerate(verts.tolist()),
+                    key=lambda idx_and_val: idx_and_val[1],
+                )
+            ],
+            device=mesh.device,
+        )
+
+        # Resort the vertices. index_select allocates new memory.
+        verts_sorted = verts[sort_ids]
+        verts_sorted_list.append(verts_sorted)
+
+        # The `faces` tensor contains vertex ids. Substitute old vertex ids for the
+        # new ones. new_vertex_ids is the inverse of sort_ids: new_vertex_ids[k]
+        # corresponds to the id of the vertex in the sorted mesh that is the same as
+        # vertex k in the non-sorted mesh.
+        new_vertex_ids = torch.argsort(sort_ids)
+        faces_sorted = (
+            torch.gather(new_vertex_ids, 0, faces.flatten())
+            .reshape(faces.shape)
+            .clone()
+        )
+        faces_sorted_list.append(faces_sorted)
+
+    other = mesh.__class__(verts=verts_sorted_list, faces=faces_sorted_list)
+    for k in mesh._INTERNAL_TENSORS:
+        v = getattr(mesh, k)
+        if torch.is_tensor(v):
+            setattr(other, k, v.clone())
+
+    return other
+
+
+def init_cube_meshes(device: str = "cpu"):
+    # Make Meshes with four cubes translated from the origin by varying amounts.
+    verts = torch.FloatTensor(
+        [
+            [0, 0, 0],
+            [1, 0, 0],  # 1->0
+            [1, 1, 0],  # 2->1
+            [0, 1, 0],  # 3->2
+            [0, 1, 1],  # 3
+            [1, 1, 1],  # 4
+            [1, 0, 1],  # 5
+            [0, 0, 1],
+        ],
+        device=device,
+    )
+
+    faces = torch.FloatTensor(
+        [
+            [0, 2, 1],
+            [0, 3, 2],
+            [2, 3, 4],  # 1,2, 3
+            [2, 4, 5],  #
+            [1, 2, 5],  #
+            [1, 5, 6],  #
+            [0, 7, 4],
+            [0, 4, 3],
+            [5, 4, 7],
+            [5, 7, 6],
+            [0, 6, 7],
+            [0, 1, 6],
+        ],
+        device=device,
+    )
+
+    return Meshes(
+        verts=[verts, verts + 1, verts + 2, verts + 3],
+        faces=[faces, faces, faces, faces],
+    )
 
 
 class TestMeshes(TestCaseMixin, unittest.TestCase):
@@ -265,9 +412,7 @@ class TestMeshes(TestCaseMixin, unittest.TestCase):
             self.assertTrue(mesh_to_edges_packed_first_idx[0] == 0)
 
     def test_allempty(self):
-        verts_list = []
-        faces_list = []
-        mesh = Meshes(verts=verts_list, faces=faces_list)
+        mesh = Meshes(verts=[], faces=[])
         self.assertEqual(len(mesh), 0)
         self.assertEqual(mesh.verts_padded().shape[0], 0)
         self.assertEqual(mesh.faces_padded().shape[0], 0)
@@ -1153,6 +1298,106 @@ class TestMeshes(TestCaseMixin, unittest.TestCase):
             yes_normals.offset_verts_(torch.FloatTensor([1, 2, 3]).expand(12, 3))
             self.assertFalse(torch.allclose(yes_normals.verts_normals_padded(), verts))
 
+    def test_submeshes(self):
+        empty_mesh = Meshes([], [])
+        # Four cubes with offsets [0, 1, 2, 3].
+        cubes = init_cube_meshes()
+
+        # Extracting an empty submesh from an empty mesh is allowed, but extracting
+        # a nonempty submesh from an empty mesh should result in a value error.
+        self.assertTrue(mesh_structures_equal(empty_mesh.submeshes([]), empty_mesh))
+        self.assertTrue(
+            mesh_structures_equal(cubes.submeshes([[], [], [], []]), empty_mesh)
+        )
+
+        with self.assertRaisesRegex(
+            ValueError, "You must specify exactly one set of submeshes"
+        ):
+            empty_mesh.submeshes([torch.LongTensor([0])])
+
+        # Check that we can chop the cube up into its facets.
+        subcubes = to_sorted(
+            cubes.submeshes(
+                [  # Do not submesh cube#1.
+                    [],
+                    # Submesh the front face and the top-and-bottom of cube#2.
+                    [
+                        torch.LongTensor([0, 1]),
+                        torch.LongTensor([2, 3, 4, 5]),
+                    ],
+                    # Do not submesh cube#3.
+                    [],
+                    # Submesh the whole cube#4 (clone it).
+                    [torch.LongTensor(list(range(12)))],
+                ]
+            )
+        )
+
+        # The cube should've been chopped into three submeshes.
+        self.assertEquals(len(subcubes), 3)
+
+        # The first submesh should be a single facet of cube#2.
+        front_facet = to_sorted(
+            Meshes(
+                verts=torch.FloatTensor([[[0, 0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 0]]])
+                + 1,
+                faces=torch.LongTensor([[[0, 2, 1], [0, 3, 2]]]),
+            )
+        )
+        self.assertTrue(mesh_structures_equal(front_facet, subcubes[0]))
+
+        # The second submesh should be the top and bottom facets of cube#2.
+        top_and_bottom = Meshes(
+            verts=torch.FloatTensor(
+                [[[1, 0, 0], [1, 1, 0], [0, 1, 0], [0, 1, 1], [1, 1, 1], [1, 0, 1]]]
+            )
+            + 1,
+            faces=torch.LongTensor([[[1, 2, 3], [1, 3, 4], [0, 1, 4], [0, 4, 5]]]),
+        )
+        self.assertTrue(mesh_structures_equal(to_sorted(top_and_bottom), subcubes[1]))
+
+        # The last submesh should be all of cube#3.
+        self.assertTrue(mesh_structures_equal(to_sorted(cubes[3]), subcubes[2]))
+
+        # Test alternative input parameterization: list of LongTensors.
+        two_facets = torch.LongTensor([[0, 1], [4, 5]])
+        subcubes = to_sorted(cubes.submeshes([two_facets, [], two_facets, []]))
+        expected_verts = torch.FloatTensor(
+            [
+                [[0, 0, 0], [0, 1, 0], [1, 0, 0], [1, 1, 0]],
+                [[1, 0, 0], [1, 0, 1], [1, 1, 0], [1, 1, 1]],
+                [[2, 2, 2], [2, 3, 2], [3, 2, 2], [3, 3, 2]],
+                [[3, 2, 2], [3, 2, 3], [3, 3, 2], [3, 3, 3]],
+            ]
+        )
+        expected_faces = torch.LongTensor(
+            [
+                [[0, 3, 2], [0, 1, 3]],
+                [[0, 2, 3], [0, 3, 1]],
+                [[0, 3, 2], [0, 1, 3]],
+                [[0, 2, 3], [0, 3, 1]],
+            ]
+        )
+        expected_meshes = Meshes(verts=expected_verts, faces=expected_faces)
+        self.assertTrue(mesh_structures_equal(subcubes, expected_meshes))
+
+        # Test alternative input parameterization: a single LongTensor.
+        triangle_per_mesh = torch.LongTensor([[[0]], [[1]], [[4]], [[5]]])
+        subcubes = to_sorted(cubes.submeshes(triangle_per_mesh))
+        expected_verts = torch.FloatTensor(
+            [
+                [[0, 0, 0], [1, 0, 0], [1, 1, 0]],
+                [[1, 1, 1], [1, 2, 1], [2, 2, 1]],
+                [[3, 2, 2], [3, 3, 2], [3, 3, 3]],
+                [[4, 3, 3], [4, 3, 4], [4, 4, 4]],
+            ]
+        )
+        expected_faces = torch.LongTensor(
+            [[[0, 2, 1]], [[0, 1, 2]], [[0, 1, 2]], [[0, 2, 1]]]
+        )
+        expected_meshes = Meshes(verts=expected_verts, faces=expected_faces)
+        self.assertTrue(mesh_structures_equal(subcubes, expected_meshes))
+
     def test_compute_faces_areas_cpu_cuda(self):
         num_meshes = 10
         max_v = 100
@@ -1172,6 +1417,69 @@ class TestMeshes(TestCaseMixin, unittest.TestCase):
         nonzero = face_areas_cpu > 1e-6
         self.assertClose(
             face_normals_cpu[nonzero], face_normals_cuda.cpu()[nonzero], atol=1e-6
+        )
+
+    def test_equality(self):
+        meshes1 = init_mesh(num_meshes=2)
+        meshes2 = init_mesh(num_meshes=2)
+        meshes3 = init_mesh(num_meshes=3)
+        empty_mesh = Meshes([], [])
+        self.assertTrue(mesh_structures_equal(empty_mesh, Meshes([], [])))
+        self.assertTrue(mesh_structures_equal(meshes1, meshes1))
+        self.assertTrue(mesh_structures_equal(meshes1, meshes1.clone()))
+        self.assertFalse(mesh_structures_equal(empty_mesh, meshes1))
+        self.assertFalse(mesh_structures_equal(meshes1, meshes2))
+        self.assertFalse(mesh_structures_equal(meshes1, meshes3))
+
+    def test_to_sorted(self):
+        mesh = init_simple_mesh()
+        sorted_mesh = to_sorted(mesh)
+
+        expected_verts = [
+            torch.tensor(
+                [[0.1, 0.3, 0.5], [0.5, 0.2, 0.1], [0.6, 0.8, 0.7]],
+                dtype=torch.float32,
+            ),
+            torch.tensor(
+                # Vertex permutation: 0->0, 1->3, 2->2, 3->1
+                [[0.1, 0.3, 0.3], [0.1, 0.5, 0.3], [0.2, 0.3, 0.4], [0.6, 0.7, 0.8]],
+                dtype=torch.float32,
+            ),
+            torch.tensor(
+                # Vertex permutation: 0->2, 1->1, 2->4, 3->0, 4->3
+                [
+                    [0.2, 0.3, 0.4],
+                    [0.2, 0.4, 0.8],
+                    [0.7, 0.3, 0.6],
+                    [0.9, 0.3, 0.8],
+                    [0.9, 0.5, 0.2],
+                ],
+                dtype=torch.float32,
+            ),
+        ]
+
+        expected_faces = [
+            torch.tensor([[0, 1, 2]], dtype=torch.int64),
+            torch.tensor([[0, 3, 2], [3, 2, 1]], dtype=torch.int64),
+            torch.tensor(
+                [
+                    [1, 4, 2],
+                    [2, 1, 0],
+                    [4, 0, 1],
+                    [3, 0, 4],
+                    [3, 2, 1],
+                    [3, 0, 1],
+                    [3, 4, 1],
+                ],
+                dtype=torch.int64,
+            ),
+        ]
+
+        self.assertFalse(mesh_structures_equal(mesh, sorted_mesh))
+        self.assertTrue(
+            mesh_structures_equal(
+                Meshes(verts=expected_verts, faces=expected_faces), sorted_mesh
+            )
         )
 
     @staticmethod

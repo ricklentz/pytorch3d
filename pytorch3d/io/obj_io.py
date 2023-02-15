@@ -1,4 +1,4 @@
-# Copyright (c) Facebook, Inc. and its affiliates.
+# Copyright (c) Meta Platforms, Inc. and affiliates.
 # All rights reserved.
 #
 # This source code is licensed under the BSD-style license found in the
@@ -16,13 +16,13 @@ import numpy as np
 import torch
 from iopath.common.file_io import PathManager
 from PIL import Image
-from pytorch3d.common.types import Device
+from pytorch3d.common.datatypes import Device
 from pytorch3d.io.mtl_io import load_mtl, make_mesh_texture_atlas
-from pytorch3d.io.utils import PathOrStr, _check_faces_indices, _make_tensor, _open_file
+from pytorch3d.io.utils import _check_faces_indices, _make_tensor, _open_file, PathOrStr
 from pytorch3d.renderer import TexturesAtlas, TexturesUV
-from pytorch3d.structures import Meshes, join_meshes_as_batch
+from pytorch3d.structures import join_meshes_as_batch, Meshes
 
-from .pluggable_formats import MeshFormatInterpreter, endswith
+from .pluggable_formats import endswith, MeshFormatInterpreter
 
 
 # Faces & Aux type returned from load_obj function.
@@ -32,7 +32,7 @@ _Aux = namedtuple(
 )
 
 
-def _format_faces_indices(faces_indices, max_index, device, pad_value=None):
+def _format_faces_indices(faces_indices, max_index: int, device, pad_value=None):
     """
     Format indices and check for invalid values. Indices can refer to
     values in one of the face properties: vertices, textures or normals.
@@ -66,6 +66,7 @@ def _format_faces_indices(faces_indices, max_index, device, pad_value=None):
     faces_indices[(faces_indices < 0)] += max_index
 
     if pad_value is not None:
+        # pyre-fixme[61]: `mask` is undefined, or not always defined.
         faces_indices[mask] = pad_value
 
     return _check_faces_indices(faces_indices, max_index, pad_value)
@@ -73,7 +74,7 @@ def _format_faces_indices(faces_indices, max_index, device, pad_value=None):
 
 def load_obj(
     f,
-    load_textures=True,
+    load_textures: bool = True,
     create_texture_atlas: bool = False,
     texture_atlas_size: int = 4,
     texture_wrap: Optional[str] = "repeat",
@@ -214,6 +215,8 @@ def load_obj(
     """
     data_dir = "./"
     if isinstance(f, (str, bytes, Path)):
+        # pyre-fixme[6]: For 1st argument expected `PathLike[Variable[AnyStr <:
+        #  [str, bytes]]]` but got `Union[Path, bytes, str]`.
         data_dir = os.path.dirname(f)
     if path_manager is None:
         path_manager = PathManager()
@@ -333,12 +336,25 @@ class MeshObjFormat(MeshFormatInterpreter):
 
         verts = data.verts_list()[0]
         faces = data.faces_list()[0]
+
+        verts_uvs: Optional[torch.Tensor] = None
+        faces_uvs: Optional[torch.Tensor] = None
+        texture_map: Optional[torch.Tensor] = None
+
+        if isinstance(data.textures, TexturesUV):
+            verts_uvs = data.textures.verts_uvs_padded()[0]
+            faces_uvs = data.textures.faces_uvs_padded()[0]
+            texture_map = data.textures.maps_padded()[0]
+
         save_obj(
             f=path,
             verts=verts,
             faces=faces,
             decimal_places=decimal_places,
             path_manager=path_manager,
+            verts_uvs=verts_uvs,
+            faces_uvs=faces_uvs,
+            texture_map=texture_map,
         )
         return True
 
@@ -351,7 +367,7 @@ def _parse_face(
     faces_normals_idx,
     faces_textures_idx,
     faces_materials_idx,
-):
+) -> None:
     face = tokens[1:]
     face_list = [f.split("/") for f in face]
     face_verts = []
@@ -524,9 +540,8 @@ def _load_materials(
     if not load_textures:
         return None, None
 
-    if not material_names or f is None:
-        if material_names:
-            warnings.warn("No mtl file provided")
+    if f is None:
+        warnings.warn("No mtl file provided")
         return None, None
 
     if not path_manager.exists(f):
@@ -546,7 +561,7 @@ def _load_materials(
 def _load_obj(
     f_obj,
     *,
-    data_dir,
+    data_dir: str,
     load_textures: bool = True,
     create_texture_atlas: bool = False,
     texture_atlas_size: int = 4,
@@ -617,6 +632,13 @@ def _load_obj(
         path_manager=path_manager,
         device=device,
     )
+
+    if material_colors and not material_names:
+        # usemtl was not present but single material was present in the .mtl file
+        material_names.append(next(iter(material_colors.keys())))
+        # replace all -1 by 0 material idx
+        if torch.is_tensor(faces_materials_idx):
+            faces_materials_idx.clamp_(min=0)
 
     if create_texture_atlas:
         # Using the images and properties from the

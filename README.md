@@ -12,6 +12,7 @@ Key features include:
 - Data structure for storing and manipulating triangle meshes
 - Efficient operations on triangle meshes (projective transformations, graph convolution, sampling, loss functions)
 - A differentiable mesh renderer
+- Implicitron, see [its README](projects/implicitron_trainer), a framework for new-view synthesis via implicit representations. ([blog post](https://ai.facebook.com/blog/implicitron-a-new-modular-extensible-framework-for-neural-implicit-representations-in-pytorch3d/))
 
 PyTorch3D is designed to integrate smoothly with deep learning methods for predicting and manipulating 3D data.
 For this reason, all operators in PyTorch3D:
@@ -22,6 +23,8 @@ For this reason, all operators in PyTorch3D:
 - Can utilize GPUs for acceleration
 
 Within FAIR, PyTorch3D has been used to power research projects such as [Mesh R-CNN](https://arxiv.org/abs/1906.02739).
+
+See our [blog post](https://ai.facebook.com/blog/-introducing-pytorch3d-an-open-source-library-for-3d-deep-learning/) to see more demos and learn about PyTorch3D.
 
 ## Installation
 
@@ -54,6 +57,11 @@ Get started with PyTorch3D by trying one of the tutorial notebooks.
 | <img src="https://raw.githubusercontent.com/facebookresearch/pytorch3d/main/.github/fit_textured_volume.gif" width="310"/> | <img src="https://raw.githubusercontent.com/facebookresearch/pytorch3d/main/.github/fit_nerf.gif" width="310" height="310"/>
 |:------------------------------------------------------------:|:--------------------------------------------------:|
 | [Fit Textured Volume](https://github.com/facebookresearch/pytorch3d/blob/main/docs/tutorials/fit_textured_volume.ipynb)| [Fit A Simple Neural Radiance Field](https://github.com/facebookresearch/pytorch3d/blob/main/docs/tutorials/fit_simple_neural_radiance_field.ipynb)|
+
+| <img src="https://raw.githubusercontent.com/facebookresearch/pytorch3d/main/.github/fit_textured_volume.gif" width="310"/> | <img src="https://raw.githubusercontent.com/facebookresearch/pytorch3d/main/.github/implicitron_config.gif" width="310" height="310"/>
+|:------------------------------------------------------------:|:--------------------------------------------------:|
+| [Fit Textured Volume in Implicitron](https://github.com/facebookresearch/pytorch3d/blob/main/docs/tutorials/implicitron_volumes.ipynb)| [Implicitron Config System](https://github.com/facebookresearch/pytorch3d/blob/main/docs/tutorials/implicitron_config_system.ipynb)|
+
 
 
 
@@ -93,6 +101,8 @@ In alphabetical order:
 
 * Amitav Baruah
 * Steve Branson
+* Krzysztof Chalupka
+* Jiali Duan
 * Luya Gao
 * Georgia Gkioxari
 * Taylor Gordon
@@ -135,6 +145,14 @@ If you are using the pulsar backend for sphere-rendering (the `PulsarPointRender
 ## News
 
 Please see below for a timeline of the codebase updates in reverse chronological order. We are sharing updates on the releases as well as research projects which are built with PyTorch3D. The changelogs for the releases are available under [`Releases`](https://github.com/facebookresearch/pytorch3d/releases),  and the builds can be installed using `conda` as per the instructions in [INSTALL.md](INSTALL.md).
+
+**[Oct 23rd 2022]:**   PyTorch3D [v0.7.1](https://github.com/facebookresearch/pytorch3d/releases/tag/v0.7.1) released.
+
+**[Aug 10th 2022]:**   PyTorch3D [v0.7.0](https://github.com/facebookresearch/pytorch3d/releases/tag/v0.7.0) released with Implicitron and MeshRasterizerOpenGL.
+
+**[Apr 28th 2022]:**   PyTorch3D [v0.6.2](https://github.com/facebookresearch/pytorch3d/releases/tag/v0.6.2) released
+
+**[Dec 16th 2021]:**   PyTorch3D [v0.6.1](https://github.com/facebookresearch/pytorch3d/releases/tag/v0.6.1) released
 
 **[Oct 6th 2021]:**   PyTorch3D [v0.6.0](https://github.com/facebookresearch/pytorch3d/releases/tag/v0.6.0) released
 

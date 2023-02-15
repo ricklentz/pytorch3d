@@ -1,4 +1,4 @@
-# Copyright (c) Facebook, Inc. and its affiliates.
+# Copyright (c) Meta Platforms, Inc. and affiliates.
 # All rights reserved.
 #
 # This source code is licensed under the BSD-style license found in the
@@ -7,10 +7,11 @@
 import unittest
 
 import torch
-from common_testing import TestCaseMixin
 from pytorch3d.loss import mesh_edge_loss
 from pytorch3d.structures import Meshes
-from test_sample_points_from_meshes import init_meshes
+
+from .common_testing import TestCaseMixin
+from .test_sample_points_from_meshes import init_meshes
 
 
 class TestMeshEdgeLoss(TestCaseMixin, unittest.TestCase):

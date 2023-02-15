@@ -1,4 +1,4 @@
-# Copyright (c) Facebook, Inc. and its affiliates.
+# Copyright (c) Meta Platforms, Inc. and affiliates.
 # All rights reserved.
 #
 # This source code is licensed under the BSD-style license found in the
@@ -11,7 +11,6 @@ from typing import Tuple
 
 import numpy as np
 import torch
-from common_testing import TestCaseMixin
 from pytorch3d.ops import (
     add_pointclouds_to_volumes,
     add_points_features_to_volume_densities_features,
@@ -22,6 +21,8 @@ from pytorch3d.structures.meshes import Meshes
 from pytorch3d.structures.pointclouds import Pointclouds
 from pytorch3d.structures.volumes import Volumes
 from pytorch3d.transforms.so3 import so3_exp_map
+
+from .common_testing import TestCaseMixin
 
 
 DEBUG = False
@@ -387,6 +388,23 @@ class TestPointsToVolumes(TestCaseMixin, unittest.TestCase):
         )
         self.assertClose(torch.sum(densities), torch.tensor(30 * 1000.0), atol=0.1)
 
+    def test_unscaled(self):
+        D = 5
+        P = 1000
+        B, C, H, W = 2, 3, D, D
+        densities = torch.zeros(B, 1, D, H, W)
+        features = torch.zeros(B, C, D, H, W)
+        volumes = Volumes(densities=densities, features=features)
+        points = torch.rand(B, 1000, 3) * (D - 1) - ((D - 1) * 0.5)
+        point_features = torch.rand(B, 1000, C)
+        pointclouds = Pointclouds(points=points, features=point_features)
+
+        volumes2 = add_pointclouds_to_volumes(
+            pointclouds, volumes, rescale_features=False
+        )
+        self.assertConstant(volumes2.densities().sum([2, 3, 4]) / P, 1, atol=1e-5)
+        self.assertConstant(volumes2.features().sum([2, 3, 4]) / P, 0.5, atol=0.03)
+
     def _check_volume_slice_color_density(
         self, V, split_dim, interp_mode, clr_gt, slice_type, border=3
     ):
@@ -567,8 +585,8 @@ class TestRawFunction(TestCaseMixin, unittest.TestCase):
             splat,
         )
 
-        self.assertIs(volume_densities, volume_densities_)
-        self.assertIs(volume_features, volume_features_)
+        self.assertTrue(volume_densities_.is_set_to(volume_densities))
+        self.assertTrue(volume_features_.is_set_to(volume_features))
 
         if align_corners:
             volume_densities_expected[0, 0, 2, 3, 4] = point_weight
